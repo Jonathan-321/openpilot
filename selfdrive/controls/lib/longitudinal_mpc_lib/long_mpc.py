@@ -295,6 +295,7 @@ class LongitudinalMpc:
     if lead is not None and lead.status:
       x_lead = lead.dRel
       v_lead = lead.vLead
+      v_lead = v_lead + np.interp(v_lead - v_ego, [-10.0, 0.0, 10.0], [5.0, 0.0, -10.0])
       a_lead = lead.aLeadK
       a_lead_tau = lead.aLeadTau
     else:
