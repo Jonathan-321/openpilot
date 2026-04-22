@@ -655,7 +655,9 @@ void SpectraCamera::config_bps(int idx, int request_id) {
 
     io_cfg[1].format = CAM_FORMAT_NV12;  // TODO: why is this 21 in the dump? should be 12
     io_cfg[1].color_space = CAM_COLOR_SPACE_BT601_FULL;
-    io_cfg[1].resource_type = CAM_ICP_BPS_OUTPUT_IMAGE_FULL;
+    // REG1 = 2x2 downscale output — replaces sensor-level binning. Sensor now produces
+    // full-resolution raw; BPS does the 2:1 downsample to match the existing VIPC stream size.
+    io_cfg[1].resource_type = CAM_ICP_BPS_OUTPUT_IMAGE_REG1;
     io_cfg[1].fence = sync_objs_bps[idx];
     io_cfg[1].direction = CAM_BUF_OUTPUT;
     io_cfg[1].subsample_pattern = 0x1;
@@ -674,9 +676,10 @@ void SpectraCamera::config_bps(int idx, int request_id) {
     // input frame
     add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, frames[0].ptr[0]), buf_handle_raw[idx], 0);
 
-    // output frame
-    add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, frames[1].ptr[0]), buf_handle_yuv[idx], 0);
-    add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, frames[1].ptr[1]), buf_handle_yuv[idx], io_cfg[1].offsets[1]);
+    // output frame — REG1 lives at frames[7] (index matches BPS_IO_IMAGES enum:
+    // 0=INPUT, 1=FULL, 2-4=DS4/16/64, 5-6=stats, 7=REG1, 8=REG2)
+    add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, frames[7].ptr[0]), buf_handle_yuv[idx], 0);
+    add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, frames[7].ptr[1]), buf_handle_yuv[idx], io_cfg[1].offsets[1]);
 
     // rest of buffers
     add_patch(pkt.get(), bps_cmd.handle, buf_desc[0].offset + offsetof(bps_tmp, settings_addr), bps_iq.handle, 0);
@@ -987,7 +990,8 @@ bool SpectraCamera::openSensor() {
   LOGD("-- Probing sensor %d", cc.camera_num);
 
   auto init_sensor_lambda = [this](SensorInfo *s) {
-    if (s->image_sensor == cereal::FrameData::ImageSensor::OS04C10 && cc.output_type == ISP_IFE_PROCESSED) {
+    if (s->image_sensor == cereal::FrameData::ImageSensor::OS04C10) {
+      // Always unbin — IFE does MxN scale on road cams; BPS does REG1 2x2 on driver cam.
       ((OS04C10*)s)->ife_downscale_configure();
     }
     sensor.reset(s);
