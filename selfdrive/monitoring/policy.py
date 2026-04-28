@@ -1,5 +1,5 @@
 from collections import defaultdict
-from math import atan2, radians
+from math import atan2
 import numpy as np
 
 from cereal import car, log
@@ -49,9 +49,8 @@ class DRIVER_MONITOR_SETTINGS:
     self._POSE_YAW_THRESHOLD = 0.4020
     self._POSE_YAW_THRESHOLD_SLACK = 0.5042
     self._POSE_YAW_THRESHOLD_STRICT = self._POSE_YAW_THRESHOLD
-    self._POSE_YAW_MIN_STEER_DEG = 30
-    self._POSE_YAW_STEER_FACTOR = 0.15
-    self._POSE_YAW_STEER_MAX_OFFSET = 0.3927
+    self._POSE_YAW_STEER_MAX_OFFSET = 0.5236
+    self._POSE_YAW_STEER_LOOKAHEAD_TIME = 2.
     self._PITCH_NATURAL_OFFSET = 0.011 # initial value before offset is learned
     self._PITCH_NATURAL_THRESHOLD = 0.449
     self._YAW_NATURAL_OFFSET = 0.075 # initial value before offset is learned
@@ -223,7 +222,7 @@ class DriverMonitoring:
     self.distracted_types['eye'] = bool(self.blink_prob > self.settings._BLINK_THRESHOLD)
     self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
 
-  def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, standstill, demo_mode=False, steering_angle_deg=0.):
+  def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, standstill, demo_mode=False, yaw_rate=0.):
     rhd_pred = driver_state.wheelOnRightProb
     # calibrates only when there's movement and either face detected
     if car_speed > self.settings._WHEELPOS_CALIB_MIN_SPEED and (driver_state.leftDriverData.faceProb > self.settings._FACE_THRESHOLD or
@@ -246,8 +245,7 @@ class DriverMonitoring:
 
     self.face_detected = driver_data.faceProb > self.settings._FACE_THRESHOLD
     self.pose.pitch, self.pose.yaw = face_orientation_from_model(driver_data.faceOrientation, driver_data.facePosition, cal_rpy)
-    steer_d = max(abs(steering_angle_deg) - self.settings._POSE_YAW_MIN_STEER_DEG, 0.)
-    self.pose.steer_yaw_offset = radians(steer_d) * -np.sign(steering_angle_deg) * self.settings._POSE_YAW_STEER_FACTOR
+    self.pose.steer_yaw_offset = yaw_rate * self.settings._POSE_YAW_STEER_LOOKAHEAD_TIME
     if self.wheel_on_right:
       self.pose.yaw *= -1
       self.pose.steer_yaw_offset *= -1
@@ -389,7 +387,7 @@ class DriverMonitoring:
       standstill = False
       driver_engaged = False
       brake_disengage_prob = 1.0
-      steering_angle_deg = 0.0
+      yaw_rate = 0.0
       rpyCalib = [0., 0., 0.]
     else:
       car_speed = sm['carState'].vEgo
@@ -398,7 +396,7 @@ class DriverMonitoring:
       standstill = sm['carState'].standstill
       driver_engaged = sm['carState'].steeringPressed or sm['carState'].gasPressed
       brake_disengage_prob = sm['modelV2'].meta.disengagePredictions.brakeDisengageProbs[0] # brake disengage prob in next 2s
-      steering_angle_deg = sm['carState'].steeringAngleDeg
+      yaw_rate = sm['livePose'].angularVelocityDevice.z
       rpyCalib = sm['liveCalibration'].rpyCalib
 
     self._set_pose_strictness(
@@ -414,7 +412,7 @@ class DriverMonitoring:
       op_engaged=enabled,
       standstill=standstill,
       demo_mode=demo,
-      steering_angle_deg=steering_angle_deg,
+      yaw_rate=yaw_rate,
     )
 
     # Update distraction events
