@@ -80,10 +80,16 @@ SSH_KEY_SRC = _BASEDIR / 'system' / 'hardware' / 'tici' / 'id_rsa'
 LOCAL_SERVER = _HERE / 'play_server.py'
 
 
+_SSH_KEY_OVERRIDE = None
+
+
 def _safe_ssh_key():
   """ssh on macOS (and recent OpenSSH on Linux) refuses keys with permissive
   modes. The bundled key is committed as 0664. Copy it to a 0600 tempfile and
-  use that path. Cached for the lifetime of the process."""
+  use that path. Cached for the lifetime of the process. If the user passed
+  -i/--identity, use that path verbatim (no copy, no chmod)."""
+  if _SSH_KEY_OVERRIDE:
+    return _SSH_KEY_OVERRIDE
   global _SSH_KEY_CACHED
   try:
     return _SSH_KEY_CACHED
@@ -279,6 +285,12 @@ def resolve_device(name_or_dongle):
 def _ssh_common_opts(key):
   return [
     '-i', key,
+    '-o', 'IdentitiesOnly=yes',
+    '-o', 'PreferredAuthentications=publickey',
+    '-o', 'PubkeyAuthentication=yes',
+    '-o', 'GSSAPIAuthentication=no',
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
     '-o', 'StrictHostKeyChecking=no',
     '-o', 'UserKnownHostsFile=/dev/null',
     '-o', 'ConnectTimeout=15',
@@ -342,7 +354,7 @@ def get_lan_ip_via_proxy(dongle_id):
 
 def install_server(target):
   _info(f"installing server to {REMOTE_SERVER}")
-  r = ssh_run(target, f"mkdir -p {REMOTE_DIR}", timeout=15)
+  r = ssh_run(target, f"mkdir -p {REMOTE_DIR}", timeout=30)
   if r.returncode != 0:
     raise RuntimeError(f"mkdir failed: {r.stderr.strip()}")
   r = scp_run(target, LOCAL_SERVER, REMOTE_SERVER)
@@ -1019,6 +1031,7 @@ def parse_args():
                               formatter_class=argparse.RawDescriptionHelpFormatter)
   p.add_argument('--device', help="comma device name (alias) or 16-char dongle id")
   p.add_argument('--ip', help="device LAN IP (skips discovery)")
+  p.add_argument('-i', '--identity', help="path to SSH private key (overrides bundled key)")
   p.add_argument('--no-default', action='store_true',
                  help="don't set Comma Speaker as system default sink")
   p.add_argument('--test', action='store_true',
@@ -1042,6 +1055,14 @@ def check_prereqs():
 
 def main():
   args = parse_args()
+
+  if args.identity:
+    key_path = os.path.expanduser(args.identity)
+    if not os.path.exists(key_path):
+      _err(f"identity file not found: {key_path}")
+      sys.exit(1)
+    global _SSH_KEY_OVERRIDE
+    _SSH_KEY_OVERRIDE = key_path
 
   # test mode is fully self-contained, no device or PipeWire needed
   if args.test:
