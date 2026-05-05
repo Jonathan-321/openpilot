@@ -2,6 +2,7 @@
 import os
 import time
 
+import pyray as rl
 from cereal import messaging
 from openpilot.system.hardware import TICI
 from openpilot.common.realtime import config_realtime_process, set_core_affinity
@@ -35,6 +36,7 @@ def main():
     uiDebug = messaging.new_message("uiDebug")
     uiDebug.uiDebug.cpuTimeMillis = cpu_time * 1000
     uiDebug.uiDebug.frameTimeMillis = frame_time * 1000
+    uiDebug.uiDebug.frameTimeMillisRaylib = rl.get_frame_time() * 1000
     pm.send("uiDebug", uiDebug)
 
     ui_state.update()
