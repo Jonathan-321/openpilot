@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
+import time
 
+from cereal import messaging
 from openpilot.system.hardware import TICI
 from openpilot.common.realtime import config_realtime_process, set_core_affinity
 from openpilot.system.ui.lib.application import gui_app
@@ -15,13 +17,26 @@ def main():
   cores = {5, }
   config_realtime_process(0, 51)
 
+  pm = messaging.PubMaster(['uiDebug'])
+
   gui_app.init_window("UI")
   if BIG_UI:
     MainLayout()
   else:
     MiciMainLayout()
 
-  for should_render in gui_app.render():
+  last_time = time.monotonic()
+
+  for should_render, cpu_time in gui_app.render():
+    now = time.monotonic()
+    frame_time = now - last_time
+    last_time = now
+
+    uiDebug = messaging.new_message("uiDebug")
+    uiDebug.uiDebug.cpuTimeMillis = cpu_time * 1000
+    uiDebug.uiDebug.frameTimeMillis = frame_time * 1000
+    pm.send("uiDebug", uiDebug)
+
     ui_state.update()
     if should_render:
       # reaffine after power save offlines our core

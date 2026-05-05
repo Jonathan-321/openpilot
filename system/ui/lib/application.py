@@ -585,6 +585,8 @@ class GuiApplication:
         self._render_profiler.enable()
 
       while not (self._window_close_requested or rl.window_should_close()):
+        start_time = time.monotonic()
+
         if PC:
           # Thread is not used on PC, need to manually add mouse events
           self._mouse._handle_mouse_event()
@@ -621,7 +623,9 @@ class GuiApplication:
         for widget in self._nav_stack[-self._nav_stack_widgets_to_render:]:
           widget.render(rl.Rectangle(0, 0, self.width, self.height))
 
-        yield True
+        draw_time = time.monotonic() - start_time
+
+        yield True, draw_time
 
         if self._scale != 1.0:
           rl.rl_pop_matrix()
