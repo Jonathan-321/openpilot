@@ -4,7 +4,7 @@ import numpy as np
 
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
-from openpilot.common.constants import CV
+from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY, CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
@@ -25,6 +25,11 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
+# Curve speed limit: cap v_cruise so predicted lateral accel stays under this,
+# accounting for road bank via params.roll (banking into the curve raises the limit).
+A_LAT_REG_MAX = 2.0   # m/s², ISO 11270 ceiling is 3.0
+A_LONG_DECEL_TARGET = 1.5  # m/s², comfortable decel used to time braking before a curve
+
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
@@ -43,6 +48,40 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
+
+
+def limit_v_cruise_in_curves(model_msg, roll):
+  """
+  Look ahead in the model's predicted plan and cap v_cruise so we arrive at any
+  upcoming curve at a speed that keeps lateral accel under A_LAT_REG_MAX. Roll-
+  compensated: banking into the curve raises the per-step lat accel budget.
+
+  Returns the speed (m/s) we should be at *now* to comfortably decelerate (at
+  A_LONG_DECEL_TARGET) to the curve's max safe speed by the time we reach it.
+  Returns a large number (no-op) when the model plan is unusable.
+  """
+  if (len(model_msg.orientationRate.z) != ModelConstants.IDX_N or
+      len(model_msg.velocity.x) != ModelConstants.IDX_N or
+      len(model_msg.position.x) != ModelConstants.IDX_N):
+    return V_CRUISE_MAX * CV.KPH_TO_MS
+
+  v_pred = np.array(model_msg.velocity.x)
+  yaw_rate_pred = np.array(model_msg.orientationRate.z)
+  x_pred = np.maximum(np.array(model_msg.position.x), 0.0)
+
+  # path curvature (signed) at each predicted timestep
+  k = yaw_rate_pred / np.clip(v_pred, 0.3, 100.0)
+
+  # roll-compensated lat accel budget per step: gravity helps when sign(roll) == sign(k)
+  a_lat_budget = A_LAT_REG_MAX + ACCELERATION_DUE_TO_GRAVITY * roll * np.sign(k)
+  a_lat_budget = np.maximum(a_lat_budget, 0.5)
+
+  v_max = np.sqrt(a_lat_budget / (np.abs(k) + 1e-3))
+
+  # speed required NOW to decelerate to v_max[i] by the time we cover x_pred[i]
+  v_now_required = np.sqrt(v_max ** 2 + 2.0 * A_LONG_DECEL_TARGET * x_pred)
+
+  return float(np.min(v_now_required))
 
 
 class LongitudinalPlanner:
@@ -93,6 +132,9 @@ class LongitudinalPlanner:
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
+
+    v_cruise_curve = limit_v_cruise_in_curves(sm['modelV2'], sm['liveParameters'].roll)
+    v_cruise = min(v_cruise, v_cruise_curve)
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
     force_slow_decel = sm['controlsState'].forceDecel
