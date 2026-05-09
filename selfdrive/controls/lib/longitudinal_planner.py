@@ -216,7 +216,6 @@ class LongitudinalPlanner:
     output_a_target_curve = self.curve_a_filter.update(limit_accel_in_curves(sm['modelV2'], v_ego, sm['liveParameters'].roll))
     if output_a_target_curve < 0 and output_a_target_curve < output_a_target:
       output_a_target = output_a_target_curve
-      self.mpc.source = LongitudinalPlanSource.curve
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
