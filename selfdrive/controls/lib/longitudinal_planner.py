@@ -27,8 +27,8 @@ _A_TOTAL_MAX_BP = [20., 40.]
 
 # Curve speed limit: cap longitudinal accel so predicted lateral accel stays under
 # this at every future point in the model's plan. Roll-compensated.
-A_LAT_REG_MAX = 2.0       # m/s², ISO 11270 ceiling is 3.0
-A_CURVE_MIN_DECEL = -2.0  # m/s², floor for curve-driven decel (limit aggressiveness while tuning)
+A_LAT_REG_MAX = 3.0       # m/s², ISO 11270 ceiling
+A_CURVE_MIN_DECEL = -3.5  # m/s², floor for curve-driven decel
 CURVE_MIN_LOOKAHEAD = 5.0  # m, ignore plan points closer than this (gradient boundary noise)
 
 def get_max_accel(v_ego):
