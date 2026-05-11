@@ -60,15 +60,14 @@ def limit_accel_in_curves(model_msg, v_ego, roll):
   Curvature is computed geometrically from position.x/y (orientationRate.z is
   noisy and not reliable from the model). Returns the most aggressive
   (most negative) decel required to be at v_max[i] when we reach the predicted
-  distance position.x[i]. If we're already in a curve hotter than the limit,
-  this comes out very negative and gets clipped to ACCEL_MIN downstream — i.e.
-  immediate hard brake.
+  distance position.x[i], floored at A_CURVE_MIN_DECEL.
 
-  Returns 0.0 (no cap) when the model plan is unusable so the filter downstream
-  has a clean baseline.
+  Returns 0.0 (no cap) when inputs are unusable so the filter downstream
+  has a clean baseline (and never sees NaN).
   """
   if (len(model_msg.position.x) != ModelConstants.IDX_N or
-      len(model_msg.position.y) != ModelConstants.IDX_N):
+      len(model_msg.position.y) != ModelConstants.IDX_N or
+      not np.isfinite(v_ego) or not np.isfinite(roll)):
     return 0.0
 
   x = np.array(model_msg.position.x)
@@ -163,6 +162,7 @@ class LongitudinalPlanner:
 
     if reset_state:
       self.v_desired_filter.x = v_ego
+      self.curve_a_filter.x = 0.0
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
 
@@ -214,7 +214,7 @@ class LongitudinalPlanner:
       self.output_should_stop = output_should_stop_mpc
 
     output_a_target_curve = self.curve_a_filter.update(limit_accel_in_curves(sm['modelV2'], v_ego, sm['liveParameters'].roll))
-    if output_a_target_curve < 0 and output_a_target_curve < output_a_target:
+    if output_a_target_curve < -0.05 and output_a_target_curve < output_a_target:
       output_a_target = output_a_target_curve
 
     for idx in range(2):
