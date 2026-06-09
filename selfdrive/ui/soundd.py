@@ -4,7 +4,7 @@ import time
 import wave
 
 
-from cereal import car, messaging
+from cereal import log, messaging
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import Ratekeeper
@@ -30,7 +30,7 @@ if HARDWARE.get_device_type() == "tizi":
   AMBIENT_DB = 30
   VOLUME_BASE = 10
 
-AudibleAlert = car.CarControl.HUDControl.AudibleAlert
+AudibleAlert = log.SelfdriveState.AudibleAlert
 
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
@@ -46,7 +46,7 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   AudibleAlert.warningSoft: ("warning_soft.wav", None, MAX_VOLUME),
   AudibleAlert.warningImmediate: ("warning_immediate.wav", None, MAX_VOLUME),
 
-  AudibleAlert.laneChange: ("bump.wav", 1, MAX_VOLUME),
+  AudibleAlert.laneChange: ("chime.wav", 1, MAX_VOLUME),
 }
 if HARDWARE.get_device_type() == "tizi":
   sound_list.update({

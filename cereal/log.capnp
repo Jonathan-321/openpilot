@@ -771,12 +771,30 @@ struct SelfdriveState {
   alertStatus @5 :AlertStatus;
   alertSize @6 :AlertSize;
   alertType @7 :Text;
-  alertSound @8 :Car.CarControl.HUDControl.AudibleAlert;
+  alertSoundDEPRECATED @8 :Car.CarControl.HUDControl.AudibleAlert;
+  alertSound @13 :AudibleAlert;
   alertHudVisual @12 :Car.CarControl.HUDControl.VisualAlert;
 
   # configurable driving settings
   experimentalMode @10 :Bool;
   personality @11 :LongitudinalPersonality;
+
+  enum AudibleAlert {
+    none @0;
+
+    engage @1;
+    disengage @2;
+    refuse @3;
+
+    warningSoft @4;
+    warningImmediate @5;
+
+    prompt @6;
+    promptRepeat @7;
+    promptDistracted @8;
+
+    laneChange @9;
+  }
 
   enum OpenpilotState @0xdbe58b96d2d1ac61 {
     disabled @0;
