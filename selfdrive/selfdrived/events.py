@@ -609,7 +609,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Changing Lanes",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.laneChange, .1),
+      Priority.LOW, VisualAlert.none, AudibleAlert.laneChangeConfirmed, .1),
   },
 
   EventName.steerSaturated: {
