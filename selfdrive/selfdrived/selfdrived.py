@@ -293,6 +293,9 @@ class SelfdriveD:
           self.events.add(EventName.preLaneChangeRight)
     elif self.sm['modelV2'].meta.laneChangeState in (LaneChangeState.laneChangeStarting,
                                                     LaneChangeState.laneChangeFinishing):
+      # one-off event to prevent lanechange alert from being played repeatedly during lanechange
+      if EventName.laneChange not in self.events_prev:
+        self.events.add(EventName.laneChangeStarted)
       self.events.add(EventName.laneChange)
 
     for i, pandaState in enumerate(self.sm['pandaStates']):

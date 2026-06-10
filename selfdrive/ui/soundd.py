@@ -4,7 +4,7 @@ import time
 import wave
 
 
-from cereal import car, messaging
+from cereal import log, messaging
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import Ratekeeper
@@ -30,7 +30,7 @@ if HARDWARE.get_device_type() == "tizi":
   AMBIENT_DB = 30
   VOLUME_BASE = 10
 
-AudibleAlert = car.CarControl.HUDControl.AudibleAlert
+AudibleAlert = log.SelfdriveState.AudibleAlert
 
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
@@ -45,6 +45,8 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
 
   AudibleAlert.warningSoft: ("warning_soft.wav", None, MAX_VOLUME),
   AudibleAlert.warningImmediate: ("warning_immediate.wav", None, MAX_VOLUME),
+
+  AudibleAlert.confirmation: ("chime.wav", 1, MAX_VOLUME),
 }
 if HARDWARE.get_device_type() == "tizi":
   sound_list.update({
@@ -74,6 +76,7 @@ class Soundd:
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
+    self.pending_stop = False
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -110,6 +113,12 @@ class Soundd:
         ret[written_frames:written_frames+frames_to_write] = sound_data[current_sound_frame:current_sound_frame+frames_to_write]
         written_frames += frames_to_write
         self.current_sound_frame += frames_to_write
+        current_sound_frame = self.current_sound_frame % len(sound_data)
+        loops = self.current_sound_frame // len(sound_data)
+        if self.pending_stop and current_sound_frame == 0:
+          self.current_alert = AudibleAlert.none
+          self.pending_stop = False
+          break
 
     return ret * self.current_volume
 
@@ -119,7 +128,12 @@ class Soundd:
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
-    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    # let looping sounds complete instead of cutting off when there is no new alert pending
+    if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:
+      self.pending_stop = True
+      return
+    self.pending_stop = False
+    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_alert])
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
         self.ramp_start_volume = self.current_volume
@@ -162,10 +176,11 @@ class Soundd:
       while True:
         sm.update(0)
 
-        # Always update volume, even when alert is playing
+        # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-          self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+          if self.current_alert == AudibleAlert.none:
+            self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
 
