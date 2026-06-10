@@ -76,6 +76,7 @@ class Soundd:
     self.ramp_start_time = 0.
 
     self.selfdrive_timeout_alert = False
+    self.pending_stop = False
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
@@ -114,6 +115,10 @@ class Soundd:
         self.current_sound_frame += frames_to_write
         current_sound_frame = self.current_sound_frame % len(sound_data)
         loops = self.current_sound_frame // len(sound_data)
+        if self.pending_stop and current_sound_frame == 0:
+          self.current_alert = AudibleAlert.none
+          self.pending_stop = False
+          break
 
     return ret * self.current_volume
 
@@ -123,6 +128,11 @@ class Soundd:
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
+    # let looping sounds complete instead of cutting off when there is no new alert pending
+    if new_alert == AudibleAlert.none and self.current_alert != AudibleAlert.none and sound_list[self.current_alert][1] is None:
+      self.pending_stop = True
+      return
+    self.pending_stop = False
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_alert])
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
