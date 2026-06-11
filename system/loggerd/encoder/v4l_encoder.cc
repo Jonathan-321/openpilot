@@ -1,4 +1,6 @@
 #include <cassert>
+#include <cerrno>
+#include <cstring>
 #include <string>
 #include <sys/ioctl.h>
 #include <poll.h>
@@ -323,6 +325,23 @@ void V4LEncoder::set_bitrate(int bitrate) {
     return;
   }
   current_bitrate = bitrate;
+}
+
+void V4LEncoder::request_keyframe() {
+  if (!force_keyframe_supported) return;
+
+  struct v4l2_control ctrl = {
+    .id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME,
+    .value = 1,
+  };
+
+  if (util::safe_ioctl(fd, VIDIOC_S_CTRL, &ctrl) == -1) {
+    const int err = errno;
+    LOGW("failed to force %s keyframe: %s(%d)", encoder_info.publish_name, strerror(err), err);
+    if (err == EINVAL || err == ENOTTY) {
+      force_keyframe_supported = false;
+    }
+  }
 }
 
 V4LEncoder::~V4LEncoder() {

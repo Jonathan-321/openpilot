@@ -6,6 +6,7 @@ import av
 from teleoprtc.tracks import TiciVideoStreamTrack
 
 from cereal import messaging
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, DT_DMON
 
 # arbitrary 16-byte UUID identifying openpilot frame-timing SEI messages
@@ -22,6 +23,11 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
     "wideRoad": "livestreamWideRoadEncodeData",
     "road": "livestreamRoadEncodeData",
   }
+  camera_to_encoder_thread = {
+    "driver": "driver_cam_encoder",
+    "wideRoad": "wide_road_cam_encoder",
+    "road": "road_cam_encoder",
+  }
 
   def __init__(self, camera_type: str):
     dt = DT_DMON if camera_type == "driver" else DT_MDL
@@ -32,11 +38,16 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
     self._t0_ns = time.monotonic_ns()
     self.timing_sei_enabled = False
 
+    self.request_livestream_keyframe(camera_type)
+
   def _make_sock(self, camera_type: str) -> messaging.SubSocket:
     return messaging.sub_sock(self.camera_to_sock_mapping[camera_type], conflate=True)
 
   def switch_camera(self, camera_type: str) -> None:
     self._sock = self._make_sock(camera_type)
+
+  def request_livestream_keyframe(self, camera_type: str) -> None:
+    Params().put("LivestreamKeyframeRequest", self.camera_to_encoder_thread[camera_type])
 
   def _build_frame_data(self, msg) -> bytes:
     encode_data = getattr(msg, msg.which())
