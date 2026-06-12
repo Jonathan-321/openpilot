@@ -71,7 +71,7 @@ def check_selfdrive_timeout_alert(sm):
 class Soundd:
   def __init__(self):
     self.params = Params()
-    self.dual_tone_sounds = self.params.get_bool("DualToneSounds")
+    self.single_tone_sounds = self.params.get_bool("SingleToneSounds")
     self.load_sounds()
 
     self.current_alert = AudibleAlert.none
@@ -92,7 +92,7 @@ class Soundd:
     # Load all sounds
     for sound in sound_list:
       filename, play_count, volume = sound_list[sound]
-      if self.dual_tone_sounds:
+      if not self.single_tone_sounds:
         filename = DUAL_TONE_SOUNDS.get(filename, filename)
 
       with wave.open(BASEDIR + "/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
@@ -197,9 +197,9 @@ class Soundd:
 
         # check once per second if the sound set changed
         if rk.frame % 20 == 0:
-          dual_tone_sounds = self.params.get_bool("DualToneSounds")
-          if dual_tone_sounds != self.dual_tone_sounds:
-            self.dual_tone_sounds = dual_tone_sounds
+          single_tone_sounds = self.params.get_bool("SingleToneSounds")
+          if single_tone_sounds != self.single_tone_sounds:
+            self.single_tone_sounds = single_tone_sounds
             self.load_sounds()
 
         # Ramp up immediate warning sound over 4s

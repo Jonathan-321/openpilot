@@ -89,16 +89,16 @@ class DeveloperLayout(Widget):
       callback=self._on_enable_ui_debug,
     )
 
-    self._dual_tone_toggle = toggle_item(
-      lambda: tr("Dual Tone Sounds"),
+    self._single_tone_toggle = toggle_item(
+      lambda: tr("Single Tone Sounds"),
       description="",
-      initial_state=self._params.get_bool("DualToneSounds"),
-      callback=self._on_dual_tone_sounds,
+      initial_state=self._params.get_bool("SingleToneSounds"),
+      callback=self._on_single_tone_sounds,
     )
     self._on_enable_ui_debug(self._params.get_bool("ShowDebugInfo"))
 
     self._scroller = Scroller([
-      self._dual_tone_toggle,
+      self._single_tone_toggle,
       self._adb_toggle,
       self._ssh_toggle,
       self._ssh_keys,
@@ -154,12 +154,12 @@ class DeveloperLayout(Widget):
       ("LateralManeuverMode", self._lat_maneuver_toggle),
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._ui_debug_toggle),
-      ("DualToneSounds", self._dual_tone_toggle),
+      ("SingleToneSounds", self._single_tone_toggle),
     ):
       item.action_item.set_state(self._params.get_bool(key))
 
-  def _on_dual_tone_sounds(self, state: bool):
-    self._params.put_bool("DualToneSounds", state, block=True)
+  def _on_single_tone_sounds(self, state: bool):
+    self._params.put_bool("SingleToneSounds", state, block=True)
 
   def _on_enable_ui_debug(self, state: bool):
     self._params.put_bool("ShowDebugInfo", state, block=True)
