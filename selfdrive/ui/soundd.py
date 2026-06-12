@@ -47,6 +47,7 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   AudibleAlert.warningImmediate: ("warning_immediate.wav", None, MAX_VOLUME),
 
   AudibleAlert.confirmation: ("chime.wav", 1, MAX_VOLUME),
+  AudibleAlert.preAlert: ("pre_alert.wav", 1, MAX_VOLUME),
 }
 if HARDWARE.get_device_type() == "tizi":
   sound_list.update({

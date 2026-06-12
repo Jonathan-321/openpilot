@@ -517,7 +517,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Pay Attention",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+      Priority.LOW, VisualAlert.none, AudibleAlert.preAlert, .1),
   },
 
   EventName.driverDistracted2: {
@@ -1045,7 +1045,7 @@ if HARDWARE.get_device_type() == 'mici':
         "Pay Attention",
         "",
         AlertStatus.normal, AlertSize.small,
-        Priority.LOW, VisualAlert.none, AudibleAlert.none, 2),
+        Priority.LOW, VisualAlert.none, AudibleAlert.preAlert, 2),
     },
     EventName.driverDistracted2: {
       ET.PERMANENT: Alert(
