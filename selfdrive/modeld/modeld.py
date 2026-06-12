@@ -25,9 +25,11 @@ from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_drivi
 from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
+from openpilot.selfdrive.modeld.big_model_ipc import BigModelChannel
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
+BIG_MODEL_DEADLINE = 0.045  # how long to wait for bigmodeld before falling back to the small model
 
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
@@ -141,10 +143,13 @@ def main(demo=False):
 
   _present = usbgpu_present()
   _compiled = os.path.isfile(get_manifest_path(modeld_pkl_path(usbgpu=True)))
-  USBGPU = _present and _compiled
+  use_big = _present and _compiled
   params = Params()
   params.put_bool("UsbGpuPresent", _present)
   params.put_bool("UsbGpuCompiled", _compiled)
+  params.put_bool("UsbGpuActive", False)
+  big_channel = None
+  big_active = False
 
   config_realtime_process(7, 54)
 
@@ -172,8 +177,8 @@ def main(demo=False):
     cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
 
   st = time.monotonic()
-  cloudlog.warning("loading model")
-  model = ModelState(vipc_client_main.width, vipc_client_main.height, USBGPU)
+  cloudlog.warning("loading small model")
+  model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu=False)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # messaging
@@ -288,7 +293,33 @@ def main(demo=False):
     }
 
     mt1 = time.perf_counter()
+    # small model runs on the main thread and is always ready, so a lost usbgpu never gaps the output
     model_output = model.run(bufs, transforms, inputs, prepare_only)
+    used_big = False
+    if use_big and model_output is not None:
+      if big_channel is None:
+        try:
+          big_channel = BigModelChannel(create=False)
+        except OSError:
+          big_channel = None  # bigmodeld not up yet
+      if big_channel is not None:
+        # use bigmodeld's output for this frame if it lands in time, else keep the small model output
+        deadline = mt1 + BIG_MODEL_DEADLINE
+        while time.perf_counter() < deadline:
+          fid = big_channel.peek_frame_id()
+          if fid == meta_main.frame_id:
+            got = big_channel.read()
+            if got is not None and got[0] == meta_main.frame_id:
+              model_output = got[1]
+              used_big = True
+            break
+          # only wait while bigmodeld is on this frame or the one before it
+          if fid is None or fid != meta_main.frame_id - 1:
+            break
+          time.sleep(0.0005)
+    if used_big != big_active:
+      big_active = used_big
+      params.put_bool("UsbGpuActive", big_active)
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
