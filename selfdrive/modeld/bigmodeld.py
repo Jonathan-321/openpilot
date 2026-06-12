@@ -14,12 +14,10 @@ from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, PublishState
 from openpilot.common.file_chunker import get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path
-from openpilot.selfdrive.modeld.modeld import ModelState, FrameMeta, get_action_from_model, \
-                                              LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS
+from openpilot.selfdrive.modeld.modeld import ModelState, FrameMeta, LAT_SMOOTH_SECONDS, LONG_SMOOTH_SECONDS
 from openpilot.selfdrive.modeld.big_model_ipc import BigModelChannel
 
 PROCESS_NAME = "selfdrive.modeld.bigmodeld"
@@ -79,18 +77,15 @@ def main(demo=False):
   cloudlog.warning(f"bigmodeld loaded big model in {time.monotonic() - st:.1f}s")
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
-  publish_state = PublishState()
   if demo:
     CP = get_demo_car_params()
   else:
     CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   long_delay = CP.longitudinalActuatorDelay + LONG_SMOOTH_SECONDS
-  prev_action = log.ModelDataV2.Action()
   DH = DesireHelper()
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
-  live_calib_seen = False
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
@@ -121,15 +116,12 @@ def main(demo=False):
     sm.update(0)
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
-    frame_id = sm["roadCameraState"].frameId
-    v_ego = max(sm["carState"].vEgo, 0.)
     lat_delay = sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
       model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
       model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
-      live_calib_seen = True
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -156,14 +148,8 @@ def main(demo=False):
     model_output = model.run(bufs, transforms, inputs, prepare_only)
     if model_output is not None:
       channel.write(meta_main.frame_id, model_output)
-
-      modelv2_send = messaging.new_message('modelV2')
-      action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
-      prev_action = action
-      fill_model_msg(messaging.new_message('drivingModelData'), modelv2_send, model_output, action,
-                     publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
-                     0.0, meta_main.timestamp_eof, 0.0, live_calib_seen)
-      desire_state = modelv2_send.modelV2.meta.desireState
+      # drive our own desire from the model output so the big model gets the same lane change input
+      desire_state = model_output['desire_state'][0].reshape(-1)
       lane_change_prob = desire_state[log.Desire.laneChangeLeft] + desire_state[log.Desire.laneChangeRight]
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob)
     last_vipc_frame_id = meta_main.frame_id
