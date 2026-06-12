@@ -145,7 +145,14 @@ def main(demo=False):
       'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
 
-    model_output = model.run(bufs, transforms, inputs, prepare_only)
+    try:
+      model_output = model.run(bufs, transforms, inputs, prepare_only)
+    except Exception:
+      # usbgpu disconnected or errored: stop cleanly and do not touch it again, modeld stays on the
+      # small model. we sleep instead of exiting so manager does not restart us into the dead usbgpu.
+      cloudlog.exception("bigmodeld usbgpu error, stopping")
+      while True:
+        time.sleep(1)
     if model_output is not None:
       channel.write(meta_main.frame_id, model_output)
       # drive our own desire from the model output so the big model gets the same lane change input
