@@ -6,18 +6,13 @@ import time
 import pickle
 import numpy as np
 import cereal.messaging as messaging
-from cereal import car, log
-from cereal.messaging import PubMaster, SubMaster
-from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
-from opendbc.car.car_helpers import get_demo_car_params
+from cereal import log
+from cereal.messaging import PubMaster
+from msgq.visionipc import VisionBuf
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
-from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.realtime import config_realtime_process, DT_MDL
-from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.common.realtime import config_realtime_process
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
-from openpilot.common.transformations.model import get_warp_matrix
-from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
@@ -25,11 +20,10 @@ from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_drivi
 from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
-from openpilot.selfdrive.modeld.big_model_ipc import BigModelChannel
+from openpilot.selfdrive.modeld.model_channel import ModelChannel, BIG_CHANNEL, SMALL_CHANNEL
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
-BIG_MODEL_DEADLINE = 0.045  # how long to wait for bigmodeld before falling back to the small model
 
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
@@ -138,217 +132,108 @@ class ModelState:
     return outputs_dict
 
 
-def main(demo=False):
-  cloudlog.warning("modeld init")
+BIG_MODEL_DEADLINE = 0.025  # wait for big only briefly past when small is ready; keeps the fallback frame on-time
 
+
+def _publish(pm, publish_state, prev_action, payload):
+  output = payload['output']
+  action = get_action_from_model(output, prev_action, payload['lat_action_t'], payload['long_action_t'], payload['v_ego'])
+  modelv2_send = messaging.new_message('modelV2')
+  drivingdata_send = messaging.new_message('drivingModelData')
+  posenet_send = messaging.new_message('cameraOdometry')
+  fill_model_msg(modelv2_send, output, action, publish_state, payload['frame_id'], payload['frame_id_extra'],
+                 payload['road_frame_id'], payload['frame_drop_ratio'], payload['timestamp_eof'],
+                 payload['model_execution_time'], payload['live_calib_seen'])
+  modelv2_send.modelV2.meta.laneChangeState = payload['lane_change_state']
+  modelv2_send.modelV2.meta.laneChangeDirection = payload['lane_change_direction']
+  fill_driving_model_data(drivingdata_send, modelv2_send)
+  fill_pose_msg(posenet_send, output, payload['frame_id'], payload['vipc_dropped_frames'],
+                payload['timestamp_eof'], payload['live_calib_seen'])
+  pm.send('modelV2', modelv2_send)
+  pm.send('drivingModelData', drivingdata_send)
+  pm.send('cameraOdometry', posenet_send)
+  return action
+
+
+def main(demo=False):
+  # modeld is a thin selector: the big model (bigmodeld) and small model (smallmodeld) each run in
+  # their own process and write their output to a shared channel. modeld runs NO model, so it adds no
+  # load and stays lighter than master. It publishes the big model's output when it lands in time, else
+  # the small model's already-computed output for the same frame. The small model runs every frame and
+  # is always ready, so losing the usbgpu fails over to it with no gap.
+  cloudlog.warning("modeld (selector) init")
+  params = Params()
   _present = usbgpu_present()
   _compiled = os.path.isfile(get_manifest_path(modeld_pkl_path(usbgpu=True)))
   use_big = _present and _compiled
-  params = Params()
   params.put_bool("UsbGpuPresent", _present)
   params.put_bool("UsbGpuCompiled", _compiled)
   params.put_bool("UsbGpuActive", False)
-  big_channel = None
-  big_active = False
 
   config_realtime_process(7, 54)
 
-  # visionipc clients
-  while True:
-    available_streams = VisionIpcClient.available_streams("camerad", block=False)
-    if available_streams:
-      use_extra_client = VisionStreamType.VISION_STREAM_WIDE_ROAD in available_streams and VisionStreamType.VISION_STREAM_ROAD in available_streams
-      main_wide_camera = VisionStreamType.VISION_STREAM_ROAD not in available_streams
-      break
-    time.sleep(.1)
-
-  vipc_client_main_stream = VisionStreamType.VISION_STREAM_WIDE_ROAD if main_wide_camera else VisionStreamType.VISION_STREAM_ROAD
-  vipc_client_main = VisionIpcClient("camerad", vipc_client_main_stream, True)
-  vipc_client_extra = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_WIDE_ROAD, False)
-  cloudlog.warning(f"vision stream set up, main_wide_camera: {main_wide_camera}, use_extra_client: {use_extra_client}")
-
-  while not vipc_client_main.connect(False):
-    time.sleep(0.1)
-  while use_extra_client and not vipc_client_extra.connect(False):
-    time.sleep(0.1)
-
-  cloudlog.warning(f"connected main cam with buffer size: {vipc_client_main.buffer_len} ({vipc_client_main.width} x {vipc_client_main.height})")
-  if use_extra_client:
-    cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
-
-  st = time.monotonic()
-  cloudlog.warning("loading small model")
-  model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu=False)
-  cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
-
-  # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry"])
-  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
-
   publish_state = PublishState()
-  params = Params()
-
-  # setup filter to track dropped frames
-  frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
-  frame_id = 0
-  last_vipc_frame_id = 0
-  run_count = 0
-
-  model_transform_main = np.zeros((3, 3), dtype=np.float32)
-  model_transform_extra = np.zeros((3, 3), dtype=np.float32)
-  live_calib_seen = False
-  buf_main, buf_extra = None, None
-  meta_main = FrameMeta()
-  meta_extra = FrameMeta()
-
-  if demo:
-    CP = get_demo_car_params()
-  else:
-    CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
-  cloudlog.info("modeld got CarParams: %s", CP.brand)
-
-  # TODO this needs more thought, use .2s extra for now to estimate other delays
-  # TODO Move smooth seconds to action function
-  long_delay = CP.longitudinalActuatorDelay + LONG_SMOOTH_SECONDS
   prev_action = log.ModelDataV2.Action()
 
-  DH = DesireHelper()
+  small_channel = None
+  big_channel = None
+  big_active = False
+  last_published = -1
+  cloudlog.warning("modeld selector starting")
 
   while True:
-    # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
-    while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
-      buf_main = vipc_client_main.recv()
-      meta_main = FrameMeta(vipc_client_main)
-      if buf_main is None:
-        break
-
-    if buf_main is None:
-      cloudlog.debug("vipc_client_main no frame")
-      continue
-
-    if use_extra_client:
-      # Keep receiving extra frames until frame id matches main camera
-      while True:
-        buf_extra = vipc_client_extra.recv()
-        meta_extra = FrameMeta(vipc_client_extra)
-        if buf_extra is None or meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
-          break
-
-      if buf_extra is None:
-        cloudlog.debug("vipc_client_extra no frame")
+    if small_channel is None:
+      try:
+        small_channel = ModelChannel(SMALL_CHANNEL, create=False)
+      except OSError:
+        time.sleep(0.05)
         continue
+    if big_channel is None and use_big:
+      try:
+        big_channel = ModelChannel(BIG_CHANNEL, create=False)
+      except OSError:
+        big_channel = None
 
-      if abs(meta_main.timestamp_sof - meta_extra.timestamp_sof) > 10000000:
-        cloudlog.error(f"frames out of sync! main: {meta_main.frame_id} ({meta_main.timestamp_sof / 1e9:.5f}),\
-                         extra: {meta_extra.frame_id} ({meta_extra.timestamp_sof / 1e9:.5f})")
+    # pace off the small model: it produces every frame and is the guaranteed output
+    fid = small_channel.peek_frame_id()
+    if fid is None or fid == last_published:
+      time.sleep(0.0005)
+      continue
+    target = fid
+    t_start = time.perf_counter()
 
-    else:
-      # Use single camera
-      buf_extra = buf_main
-      meta_extra = meta_main
-
-    sm.update(0)
-    desire = DH.desire
-    is_rhd = sm["driverMonitoringState"].isRHD
-    frame_id = sm["roadCameraState"].frameId
-    v_ego = max(sm["carState"].vEgo, 0.)
-    lat_delay = sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
-    if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
-      device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
-      dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
-      model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
-      live_calib_seen = True
-
-    traffic_convention = np.zeros(2)
-    traffic_convention[int(is_rhd)] = 1
-
-    vec_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
-    if desire >= 0 and desire < ModelConstants.DESIRE_LEN:
-      vec_desire[desire] = 1
-
-    # tracked dropped frames
-    vipc_dropped_frames = max(0, meta_main.frame_id - last_vipc_frame_id - 1)
-    frames_dropped = frame_dropped_filter.update(min(vipc_dropped_frames, 10))
-    if run_count < 10: # let frame drops warm up
-      frame_dropped_filter.x = 0.
-      frames_dropped = 0.
-    run_count = run_count + 1
-
-    frame_drop_ratio = frames_dropped / (1 + frames_dropped)
-    prepare_only = vipc_dropped_frames > 0
-    if prepare_only:
-      cloudlog.error(f"skipping model eval. Dropped {vipc_dropped_frames} frames")
-
-    bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
-    transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
-    frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
-    action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-    lat_action_t = lat_delay + frame_delay + action_delay
-    long_action_t = long_delay + frame_delay + action_delay
-    inputs: dict[str, np.ndarray] = {
-      'desire_pulse': vec_desire,
-      'traffic_convention': traffic_convention,
-      'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
-    }
-
-    mt1 = time.perf_counter()
-    # small model runs on the main thread and is always ready, so a lost usbgpu never gaps the output
-    model_output = model.run(bufs, transforms, inputs, prepare_only)
+    payload = None
     used_big = False
-    if use_big and model_output is not None:
-      if big_channel is None:
-        try:
-          big_channel = BigModelChannel(create=False)
-        except OSError:
-          big_channel = None  # bigmodeld not up yet
-      if big_channel is not None:
-        # use bigmodeld's output for this frame if it lands in time, else keep the small model output
-        deadline = mt1 + BIG_MODEL_DEADLINE
-        while time.perf_counter() < deadline:
-          fid = big_channel.peek_frame_id()
-          if fid == meta_main.frame_id:
-            got = big_channel.read()
-            if got is not None and got[0] == meta_main.frame_id:
-              model_output = got[1]
-              used_big = True
-            break
-          # only wait while bigmodeld is on this frame or the one before it
-          if fid is None or fid != meta_main.frame_id - 1:
-            break
-          time.sleep(0.0005)
+    # prefer the big model: wait only while it's actually working on this frame (current or one behind).
+    # while it warms up or after a disconnect it falls far behind, so we bail instantly to the small
+    # model with no wait. no permanent lockout: once big catches up it is used again automatically.
+    if big_channel is not None and use_big:
+      deadline = t_start + BIG_MODEL_DEADLINE
+      while time.perf_counter() < deadline:
+        bfid = big_channel.peek_frame_id()
+        if bfid == target:
+          got = big_channel.read()
+          if got is not None and got[0] == target:
+            payload = got[1]
+            used_big = True
+          break
+        if bfid is None or (bfid != target and bfid != target - 1):
+          break
+        time.sleep(0.0005)
+
+    if payload is None:
+      got = small_channel.read()
+      if got is not None and got[0] == target:
+        payload = got[1]
+
     if used_big != big_active:
       big_active = used_big
       params.put_bool("UsbGpuActive", big_active)
-    mt2 = time.perf_counter()
-    model_execution_time = mt2 - mt1
 
-    if model_output is not None:
-      modelv2_send = messaging.new_message('modelV2')
-      drivingdata_send = messaging.new_message('drivingModelData')
-      posenet_send = messaging.new_message('cameraOdometry')
-
-      action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
-      prev_action = action
-      fill_model_msg(modelv2_send, model_output, action,
-                     publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
-                     frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, live_calib_seen)
-
-      desire_state = modelv2_send.modelV2.meta.desireState
-      l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
-      r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
-      lane_change_prob = l_lane_change_prob + r_lane_change_prob
-      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob)
-      modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
-      modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
-
-      fill_driving_model_data(drivingdata_send, modelv2_send)
-      fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
-      modelv2_send.modelV2.usbGpu = USBGPU
-      pm.send('modelV2', modelv2_send)
-      pm.send('drivingModelData', drivingdata_send)
-      pm.send('cameraOdometry', posenet_send)
-    last_vipc_frame_id = meta_main.frame_id
+    if payload is not None:
+      prev_action = _publish(pm, publish_state, prev_action, payload)
+    last_published = target
 
 
 if __name__ == "__main__":

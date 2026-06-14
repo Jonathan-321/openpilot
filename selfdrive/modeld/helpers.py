@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
@@ -17,8 +16,6 @@ def modeld_pkl_path(usbgpu: bool):
   return MODELS_DIR / f'{prefix}driving_tinygrad.pkl'
 
 def usbgpu_present() -> bool:
-  if (forced := os.getenv("FORCE_USBGPU")) is not None:
-    return bool(int(forced))
   for d in Path("/sys/bus/usb/devices").glob("*"):
     try:
       if int((d / "idVendor").read_text(), 16) == USBGPU_VID and \
