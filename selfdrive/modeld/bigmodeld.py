@@ -17,8 +17,8 @@ def main(demo=False):
     cloudlog.warning(f"bigmodeld idling, no big model (usbgpu_present={present} compiled={compiled})")
     while True:
       time.sleep(1)
-  # core 7 with the small model, off camerad's core 6. big's startup compile runs at low priority
-  # (see model_worker) so it never starves the small model already producing on this shared core.
+  # core 7, shared with the small model. big runs at higher priority than small (53 vs 52) so it stays
+  # fast there, and its compile runs at low priority (see model_worker) so it never starves small.
   try:
     run(usbgpu=True, channel_path=BIG_CHANNEL, core=7, priority=53, demo=demo)
   except Exception:

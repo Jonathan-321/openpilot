@@ -183,6 +183,8 @@ def main(demo=False):
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
   run_count = 0
   big_used_count = 0
+  big_done = False  # latch: big stalled catastrophically, do not use it again until next ignition
+  big_miss = 0      # consecutive frames big failed to deliver while it was the active source
   cloudlog.warning(f"modeld selector starting (use_big={use_big} usbgpu_present={_present} compiled={_compiled})")
 
   while True:
@@ -209,9 +211,9 @@ def main(demo=False):
     payload = None
     used_big = False
     big_peek = None  # last frame_id seen on the big channel, for the heartbeat
-    # prefer big, but only wait while it's on this frame or one behind. if it warmed up/disconnected
-    # it falls far behind, so bail instantly to small. no lockout: once big catches up it's used again
-    if big_channel is not None and use_big:
+    # try big unless it has catastrophically failed this ignition. wait only while it is on this frame
+    # or one behind. if it is further behind it has not delivered this frame, so fall through to small.
+    if big_channel is not None and use_big and not big_done:
       deadline = t_start + BIG_MODEL_DEADLINE
       while time.perf_counter() < deadline:
         bfid = big_channel.peek_frame_id()
@@ -231,10 +233,23 @@ def main(demo=False):
       if got is not None and got[0] == target:
         payload = got[1]
 
-    if used_big != big_active:
-      big_active = used_big
-      params.put_bool("UsbGpuActive", big_active)
-      cloudlog.warning(f"modeld switched to {'BIG' if big_active else 'SMALL'} model at frame {target}")
+    # latched source: switch to big ONCE it first delivers a frame, then stay on big. fall back to
+    # small ONLY after big stalls for a while (catastrophic), then never use big again this ignition.
+    # any single big miss is already filled with small above, so frames are never dropped and the
+    # source flag does not flap. next ignition starts fresh from small.
+    if used_big:
+      big_miss = 0
+      if not big_active:
+        big_active = True
+        params.put_bool("UsbGpuActive", True)
+        cloudlog.warning(f"modeld switched to BIG model at frame {target}")
+    elif big_active:
+      big_miss += 1
+      if big_miss >= 10:  # ~0.5s of big not delivering = catastrophic
+        big_active = False
+        big_done = True
+        params.put_bool("UsbGpuActive", False)
+        cloudlog.warning(f"modeld big model stalled, staying on small until next ignition (frame {target})")
 
     if payload is not None:
       # drops from our own published cadence, overriding the worker's value. nonzero only when

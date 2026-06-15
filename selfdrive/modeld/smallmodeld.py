@@ -5,10 +5,10 @@ from openpilot.selfdrive.modeld.model_worker import run
 
 
 def main(demo=False):
-  # core 7, where master pins the model. the big model shares this core but compiles at low priority,
-  # so small keeps full priority here and stays at 20Hz while big loads.
+  # core 7, shared with the big model but at slightly lower priority (52 vs 53) so big stays fast.
+  # small is light (qcom, no usb) and runs in big's eGPU-wait gaps, holding 20Hz.
   try:
-    run(usbgpu=False, channel_path=SMALL_CHANNEL, core=7, demo=demo)
+    run(usbgpu=False, channel_path=SMALL_CHANNEL, core=7, priority=52, demo=demo)
   except Exception:
     cloudlog.exception("smallmodeld crashed")  # the launcher only sends crashes to sentry, log to rlog too
     raise
