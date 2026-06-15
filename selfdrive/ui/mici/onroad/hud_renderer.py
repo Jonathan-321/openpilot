@@ -1,7 +1,16 @@
+import mmap
+import os
+import struct
+import time
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
+
+# read the model channels directly for ground-truth state and rate (no params, nothing to rebuild)
+_SMALL_CHANNEL = "/dev/shm/openpilot_smallmodel"  # must match model_channel.SMALL_CHANNEL
+_BIG_CHANNEL = "/dev/shm/openpilot_bigmodel"       # must match model_channel.BIG_CHANNEL
+_CH_HDR = struct.Struct("<QqQ")                    # seq, frame_id, length; matches model_channel.HEADER
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -27,7 +36,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 36
   set_speed: int = 112
-  model_source: int = 20
+  model_source: int = 60
 
 
 @dataclass(frozen=True)
@@ -118,8 +127,10 @@ class HudRenderer(Widget):
     # which model is publishing, from the UsbGpuActive param the selector keeps current.
     # read throttled, not every frame. always shown so the source is never ambiguous
     self._params = Params()
-    self._small_line: tuple = ("small model: loading", COLORS.WHITE)
-    self._big_line: tuple = ("big model: loading", COLORS.WHITE)
+    self._chan_mm: dict = {}     # channel path -> mmap handle (lazy)
+    self._chan_state: dict = {}  # channel path -> [last_frame_id, last_advance_time, hz]
+    self._small_line: tuple = ("small: loading", COLORS.WHITE)
+    self._big_line: tuple = ("big: loading", COLORS.WHITE)
     self._model_poll_frame: int = 0
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -192,35 +203,59 @@ class HudRenderer(Widget):
     self._draw_steering_wheel(rect)
     self._draw_model_source(rect)
 
-  @staticmethod
-  def _model_status(name: str, ready: bool, failed: bool, active: bool, available: bool, metrics: str) -> tuple:
-    if not available:
-      return (f"{name}: not reachable", COLORS.MODEL_RED)
-    if failed:
-      return (f"{name}: crashed", COLORS.MODEL_RED)
-    if ready:  # running. green when it is the model actually driving, white when standing by
-      return (f"{name}: running ({metrics})", COLORS.MODEL_GREEN if active else COLORS.WHITE)
-    return (f"{name}: loading", COLORS.WHITE)
+  def _channel_status(self, path: str, now: float) -> tuple:
+    """Read a model channel's frame_id to get ground-truth state and rate. Returns (state, hz)."""
+    mm = self._chan_mm.get(path)
+    if mm is None:
+      try:
+        mm = mmap.mmap(os.open(path, os.O_RDONLY), _CH_HDR.size, prot=mmap.PROT_READ)
+        self._chan_mm[path] = mm
+      except OSError:
+        return ("loading", 0)  # worker hasn't created the channel yet
+    try:
+      fid = _CH_HDR.unpack(mm[:_CH_HDR.size])[1]
+    except Exception:
+      return ("loading", 0)
+    st = self._chan_state.get(path)
+    if st is None or st[0] < 0:
+      self._chan_state[path] = [fid, now, 0]
+      return ("running" if fid >= 0 else "loading", 0)
+    if fid > st[0]:  # advanced
+      dt = now - st[1]
+      st[2] = round((fid - st[0]) / dt) if dt > 0 else st[2]
+      st[0], st[1] = fid, now
+      return ("running", st[2])
+    if now - st[1] > 1.5:  # stopped advancing
+      return ("stalled", 0)
+    return ("running", st[2])
 
-  def _metric(self, key: str) -> str:
-    raw = self._params.get(key)
-    return raw.decode() if raw else "-- Hz"
+  @staticmethod
+  def _model_line(name: str, state: str, hz: int, active: bool, available: bool) -> tuple:
+    if not available:
+      return (f"{name}: no eGPU", COLORS.MODEL_RED)
+    if state == "stalled":
+      return (f"{name}: stalled", COLORS.MODEL_RED)
+    if state == "loading":
+      return (f"{name}: loading", COLORS.WHITE)
+    txt = f"{name}: {hz} Hz" if hz > 0 else f"{name}: running"
+    return (txt, COLORS.MODEL_GREEN if active else COLORS.WHITE)  # green when actually driving
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
-    """Two-line status panel: small and big model state with live rate, green for the active one."""
-    if self._model_poll_frame % 30 == 0:  # throttle the param reads, not every frame
+    """Two-line status panel read from the channels: state + live Hz, green for the model driving."""
+    if self._model_poll_frame % 30 == 0:  # ~0.5s
+      now = time.monotonic()
+      s_state, s_hz = self._channel_status(_SMALL_CHANNEL, now)
+      b_state, b_hz = self._channel_status(_BIG_CHANNEL, now)
       try:
-        p = self._params
-        big_active = p.get_bool("UsbGpuActive")  # the selector publishes big when this is set, else small
-        self._small_line = self._model_status("small model", ready=p.get_bool("SmallModelReady"),
-                                               failed=p.get_bool("SmallModelFailed"), active=not big_active,
-                                               available=True, metrics=self._metric("SmallModelHz"))
-        self._big_line = self._model_status("big model", ready=p.get_bool("BigModelReady"),
-                                            failed=p.get_bool("UsbGpuFailed"), active=big_active,
-                                            available=p.get_bool("UsbGpuPresent") and p.get_bool("UsbGpuCompiled"),
-                                            metrics=self._metric("BigModelHz"))
+        big_active = self._params.get_bool("UsbGpuActive")
       except Exception:
-        pass
+        big_active = False
+      try:
+        big_avail = self._params.get_bool("UsbGpuPresent") and self._params.get_bool("UsbGpuCompiled")
+      except Exception:
+        big_avail = True
+      self._small_line = self._model_line("small", s_state, s_hz, active=not big_active, available=True)
+      self._big_line = self._model_line("big", b_state, b_hz, active=big_active, available=big_avail)
     self._model_poll_frame += 1
 
     lines = [self._small_line, self._big_line]

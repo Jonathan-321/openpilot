@@ -22,10 +22,6 @@ from openpilot.selfdrive.modeld.model_channel import ModelChannel
 
 def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
-  # params the UI status panel reads: each worker reports when it is loaded, its live rate, and parks
-  ready_key = "BigModelReady" if usbgpu else "SmallModelReady"
-  failed_key = "UsbGpuFailed" if usbgpu else "SmallModelFailed"
-  hz_key = "BigModelHz" if usbgpu else "SmallModelHz"
   cloudlog.warning(f"{name} init")
   config_realtime_process(core, priority)
   params = Params()
@@ -57,11 +53,9 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     # usbgpu load failed. mark failed so the UI shows SMALL not LOADING, and park instead of crashing
     # (avoids a "not running" alert). the selector keeps publishing small until the next ignition.
     cloudlog.exception(f"{name} model load failed, parking until next ignition cycle")
-    params.put_bool(failed_key, True)
     while True:
       time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
-  params.put_bool(ready_key, True)
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
   if demo:
@@ -81,7 +75,6 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   last_vipc_frame_id = 0
   run_count = 0
   produced_count = 0
-  hz_t = time.monotonic()  # window start for the published-rate metric the UI shows
 
   while True:
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
@@ -151,7 +144,6 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
       # usbgpu errored/disconnected. modeld is already on small with no gap. idle instead of exiting
       # (exiting trips "bigmodeld not running") and don't touch the usbgpu again until next ignition
       cloudlog.exception(f"{name} model run failed, parking until next ignition cycle")
-      params.put_bool(failed_key, True)  # UI status panel shows this model crashed
       while True:
         time.sleep(1)
     model_execution_time = time.perf_counter() - mt1
@@ -177,12 +169,6 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
       }
       channel.write(meta_main.frame_id, payload)
       produced_count += 1
-      # publish the live rate and exec time for the UI status panel, every ~1s
-      if produced_count % 20 == 0:
-        now = time.monotonic()
-        hz = 20.0 / (now - hz_t) if now > hz_t else 0.0
-        params.put(hz_key, f"{round(hz)} Hz, {model_execution_time * 1e3:.0f} ms")
-        hz_t = now
       # heartbeat in the rlog so we see the worker is producing and how fast. a worker that loads but
       # never produces shows a "loaded model" line and no "producing" line
       if produced_count == 1 or produced_count % 100 == 0:

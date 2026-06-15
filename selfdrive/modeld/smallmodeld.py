@@ -5,10 +5,10 @@ from openpilot.selfdrive.modeld.model_worker import run
 
 
 def main(demo=False):
-  # background pool [0,1,2,3]: big now owns core 7 and camerad owns core 6. small is light (qcom, no
-  # usb) so it keeps up here, and as its own process it always produces no matter what big does.
+  # core 7, exactly where master pins the model. small is the universal default every device runs,
+  # so it keeps master's dedicated core. big moves to the pool as the optional add-on.
   try:
-    run(usbgpu=False, channel_path=SMALL_CHANNEL, core=[0, 1, 2, 3], demo=demo)
+    run(usbgpu=False, channel_path=SMALL_CHANNEL, core=7, demo=demo)
   except Exception:
     cloudlog.exception("smallmodeld crashed")  # the launcher only sends crashes to sentry, log to rlog too
     raise
