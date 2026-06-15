@@ -157,9 +157,8 @@ def _publish(pm, publish_state, prev_action, payload):
 
 
 def main(demo=False):
-  # thin selector: bigmodeld and smallmodeld each run in their own process and write to a shared
-  # channel. modeld runs no model, just publishes big's output when it lands in time, else small's
-  # for the same frame. small runs every frame, so losing the usbgpu fails over to it with no gap
+  # thin selector: bigmodeld and smallmodeld run in their own processes and write to a shared channel
+  # modeld runs no model, publishes big when fresh else small, so losing the usbgpu just falls to small
   cloudlog.warning("modeld (selector) init")
   params = Params()
   _present = usbgpu_present()
@@ -169,7 +168,7 @@ def main(demo=False):
   params.put_bool("UsbGpuCompiled", _compiled)
   params.put_bool("UsbGpuActive", False)
 
-  config_realtime_process(7, 54)
+  config_realtime_process([0, 1, 2, 3], 54)  # selector is light; core 7 is reserved for the big model
 
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry"])
   publish_state = PublishState()
@@ -183,7 +182,8 @@ def main(demo=False):
   # (which spikes during big's warmup and would falsely trip modeldLagging). small fills any gap
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
   run_count = 0
-  cloudlog.warning("modeld selector starting")
+  big_used_count = 0
+  cloudlog.warning(f"modeld selector starting (use_big={use_big})")
 
   while True:
     if small_channel is None:
@@ -208,12 +208,14 @@ def main(demo=False):
 
     payload = None
     used_big = False
+    big_peek = None  # last frame_id seen on the big channel, for the heartbeat
     # prefer big, but only wait while it's on this frame or one behind. if it warmed up/disconnected
     # it falls far behind, so bail instantly to small. no lockout: once big catches up it's used again
     if big_channel is not None and use_big:
       deadline = t_start + BIG_MODEL_DEADLINE
       while time.perf_counter() < deadline:
         bfid = big_channel.peek_frame_id()
+        big_peek = bfid
         if bfid == target:
           got = big_channel.read()
           if got is not None and got[0] == target:
@@ -232,6 +234,7 @@ def main(demo=False):
     if used_big != big_active:
       big_active = used_big
       params.put_bool("UsbGpuActive", big_active)
+      cloudlog.warning(f"modeld switched to {'BIG' if big_active else 'SMALL'} model at frame {target}")
 
     if payload is not None:
       # drops from our own published cadence, overriding the worker's value. nonzero only when
@@ -243,6 +246,11 @@ def main(demo=False):
         frame_dropped_filter.x = 0.
         frames_dropped = 0.
       run_count += 1
+      if used_big:
+        big_used_count += 1
+      # heartbeat in the rlog: how often big is actually used, and what we last saw on the big channel
+      if run_count % 100 == 0:
+        cloudlog.warning(f"modeld selector: big_used={big_used_count}/{run_count} last_big_peek={big_peek} target={target}")
       payload['vipc_dropped_frames'] = selector_dropped
       payload['frame_drop_ratio'] = frames_dropped / (1 + frames_dropped)
       prev_action = _publish(pm, publish_state, prev_action, payload)

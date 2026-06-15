@@ -43,10 +43,15 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   while use_extra_client and not vipc_client_extra.connect(False):
     time.sleep(0.1)
 
+  # tell the UI the big model is loading so it can show "BIG MODEL LOADING" during the ~10s compile
+  if usbgpu:
+    params.put_bool("UsbGpuLoading", True)
   st = time.monotonic()
   cloudlog.warning(f"{name} loading model")
   model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
+  if usbgpu:
+    params.put_bool("UsbGpuLoading", False)
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
   if demo:
@@ -65,6 +70,7 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   meta_extra = FrameMeta()
   last_vipc_frame_id = 0
   run_count = 0
+  produced_count = 0
 
   while True:
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
@@ -158,4 +164,10 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
         'lane_change_direction': int(DH.lane_change_direction),
       }
       channel.write(meta_main.frame_id, payload)
+      # heartbeat in the rlog so we see the worker is producing and how fast. a worker that loads but
+      # never produces shows a "loaded model" line and no "producing" line
+      if produced_count == 0 or produced_count % 100 == 0:
+        cloudlog.warning(f"{name} producing: frame={meta_main.frame_id} exec={model_execution_time * 1e3:.0f}ms "
+                         f"dropped={vipc_dropped_frames} count={produced_count}")
+      produced_count += 1
     last_vipc_frame_id = meta_main.frame_id

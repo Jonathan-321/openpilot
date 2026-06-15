@@ -27,7 +27,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 36
   set_speed: int = 112
-  model_source: int = 44
+  model_source: int = 24
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,7 @@ class HudRenderer(Widget):
     # read throttled, not every frame. always shown so the source is never ambiguous
     self._params = Params()
     self._big_model_active: bool = False
+    self._big_model_loading: bool = False
     self._model_poll_frame: int = 0
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -193,15 +194,23 @@ class HudRenderer(Widget):
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     """Always-on indicator of which model is publishing: big (eGPU) or small (on-device)."""
-    if self._model_poll_frame % 30 == 0:  # throttle the param read, not every frame
-      self._big_model_active = self._params.get_bool("UsbGpuActive")
+    if self._model_poll_frame % 30 == 0:  # throttle the param reads, not every frame
+      try:
+        self._big_model_active = self._params.get_bool("UsbGpuActive")
+        self._big_model_loading = self._params.get_bool("UsbGpuLoading")
+      except Exception:
+        self._big_model_active = self._big_model_loading = False
     self._model_poll_frame += 1
 
-    text = "BIG MODEL" if self._big_model_active else "SMALL MODEL"
-    color = COLORS.BIG_MODEL if self._big_model_active else COLORS.SMALL_MODEL
+    if self._big_model_active:
+      text, color = "BIG MODEL", COLORS.BIG_MODEL
+    elif self._big_model_loading:
+      text, color = "BIG MODEL LOADING", COLORS.SMALL_MODEL
+    else:
+      text, color = "SMALL MODEL", COLORS.SMALL_MODEL
     text_size = measure_text_cached(self._font_bold, text, FONT_SIZES.model_source)
 
-    pad_x, pad_y = 20, 10
+    pad_x, pad_y = 14, 8
     box_w = text_size.x + 2 * pad_x
     box_h = text_size.y + 2 * pad_y
     box_x = rect.x + rect.width / 2 - box_w / 2
