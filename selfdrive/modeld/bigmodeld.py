@@ -11,7 +11,9 @@ def main(demo=False):
   if not (usbgpu_present() and os.path.isfile(get_manifest_path(modeld_pkl_path(usbgpu=True)))):
     cloudlog.warning("no usbgpu / big model, bigmodeld exiting")
     return
-  run(usbgpu=True, channel_path=BIG_CHANNEL, core=6, demo=demo)
+  # not core 6 (camerad) or 7 (small fallback + selector): the big model's ~1s JIT compile would
+  # starve them. it's eGPU-offloaded so run it best-effort on the background pool, never the rest
+  run(usbgpu=True, channel_path=BIG_CHANNEL, core=[0, 1, 2, 3], priority=5, demo=demo)
 
 
 if __name__ == "__main__":

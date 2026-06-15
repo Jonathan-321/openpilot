@@ -20,10 +20,10 @@ from openpilot.selfdrive.modeld.modeld import ModelState, FrameMeta, LAT_SMOOTH_
 from openpilot.selfdrive.modeld.model_channel import ModelChannel
 
 
-def run(usbgpu: bool, channel_path: str, core: int, demo=False):
+def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
   cloudlog.warning(f"{name} init")
-  config_realtime_process(core, 53)
+  config_realtime_process(core, priority)
   params = Params()
   channel = ModelChannel(channel_path, create=True)
 
@@ -131,9 +131,8 @@ def run(usbgpu: bool, channel_path: str, core: int, demo=False):
     try:
       model_output = model.run(bufs, transforms, inputs, prepare_only)
     except Exception:
-      # the usbgpu errored/disconnected. modeld is already on the small model with no gap. stay alive
-      # and idle (do NOT exit, or manager flags "bigmodeld not running", and do NOT touch the usbgpu
-      # again) until the next ignition cycle restarts us fresh. the small model never errors here.
+      # usbgpu errored/disconnected. modeld is already on small with no gap. idle instead of exiting
+      # (exiting trips "bigmodeld not running") and don't touch the usbgpu again until next ignition
       cloudlog.exception(f"{name} model run failed, parking until next ignition cycle")
       while True:
         time.sleep(1)

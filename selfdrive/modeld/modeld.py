@@ -12,6 +12,7 @@ from msgq.visionipc import VisionBuf
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
+from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -156,11 +157,9 @@ def _publish(pm, publish_state, prev_action, payload):
 
 
 def main(demo=False):
-  # modeld is a thin selector: the big model (bigmodeld) and small model (smallmodeld) each run in
-  # their own process and write their output to a shared channel. modeld runs NO model, so it adds no
-  # load and stays lighter than master. It publishes the big model's output when it lands in time, else
-  # the small model's already-computed output for the same frame. The small model runs every frame and
-  # is always ready, so losing the usbgpu fails over to it with no gap.
+  # thin selector: bigmodeld and smallmodeld each run in their own process and write to a shared
+  # channel. modeld runs no model, just publishes big's output when it lands in time, else small's
+  # for the same frame. small runs every frame, so losing the usbgpu fails over to it with no gap
   cloudlog.warning("modeld (selector) init")
   params = Params()
   _present = usbgpu_present()
@@ -180,6 +179,10 @@ def main(demo=False):
   big_channel = None
   big_active = False
   last_published = -1
+  # frameDropPerc must reflect our published cadence, not a worker's internal frame skipping
+  # (which spikes during big's warmup and would falsely trip modeldLagging). small fills any gap
+  frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
+  run_count = 0
   cloudlog.warning("modeld selector starting")
 
   while True:
@@ -205,9 +208,8 @@ def main(demo=False):
 
     payload = None
     used_big = False
-    # prefer the big model: wait only while it's actually working on this frame (current or one behind).
-    # while it warms up or after a disconnect it falls far behind, so we bail instantly to the small
-    # model with no wait. no permanent lockout: once big catches up it is used again automatically.
+    # prefer big, but only wait while it's on this frame or one behind. if it warmed up/disconnected
+    # it falls far behind, so bail instantly to small. no lockout: once big catches up it's used again
     if big_channel is not None and use_big:
       deadline = t_start + BIG_MODEL_DEADLINE
       while time.perf_counter() < deadline:
@@ -232,6 +234,17 @@ def main(demo=False):
       params.put_bool("UsbGpuActive", big_active)
 
     if payload is not None:
+      # drops from our own published cadence, overriding the worker's value. nonzero only when
+      # small itself falls behind, the real "can't keep up" case
+      selector_dropped = max(0, target - last_published - 1) if last_published >= 0 else 0
+      frames_dropped = frame_dropped_filter.update(min(selector_dropped, 10))
+      # ignore the first 40 frames (~2s) while both workers ramp to 20Hz
+      if run_count < 40:
+        frame_dropped_filter.x = 0.
+        frames_dropped = 0.
+      run_count += 1
+      payload['vipc_dropped_frames'] = selector_dropped
+      payload['frame_drop_ratio'] = frames_dropped / (1 + frames_dropped)
       prev_action = _publish(pm, publish_state, prev_action, payload)
     last_published = target
 

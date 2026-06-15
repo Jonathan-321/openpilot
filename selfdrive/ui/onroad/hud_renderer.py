@@ -1,6 +1,7 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -31,6 +32,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
+  model_source: int = 44
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class Colors:
   DISENGAGED = rl.Color(145, 155, 149, 255)
   OVERRIDE = rl.Color(145, 155, 149, 255)  # Added
   ENGAGED = rl.Color(128, 216, 166, 255)
+  BIG_MODEL = rl.Color(128, 216, 166, 255)   # eGPU big model active (green)
+  SMALL_MODEL = rl.Color(255, 178, 64, 255)  # on-device small model / fallback (amber)
   DISENGAGED_BG = rl.Color(0, 0, 0, 153)
   OVERRIDE_BG = rl.Color(145, 155, 149, 204)
   ENGAGED_BG = rl.Color(128, 216, 166, 204)
@@ -65,6 +69,12 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+
+    # which model is publishing, from the UsbGpuActive param the selector keeps current.
+    # read throttled, not every frame. always shown so the source is never ambiguous
+    self._params = Params()
+    self._big_model_active: bool = False
+    self._model_poll_frame: int = 0
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -116,6 +126,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_current_speed(rect)
+    self._draw_model_source(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
@@ -178,3 +189,24 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_model_source(self, rect: rl.Rectangle) -> None:
+    """Always-on indicator of which driving model is publishing: big (eGPU) or small (on-device)."""
+    # throttle the param read, not every frame
+    if self._model_poll_frame % 30 == 0:
+      self._big_model_active = self._params.get_bool("UsbGpuActive")
+    self._model_poll_frame += 1
+
+    text = "BIG MODEL" if self._big_model_active else "SMALL MODEL"
+    color = COLORS.BIG_MODEL if self._big_model_active else COLORS.SMALL_MODEL
+    text_size = measure_text_cached(self._font_bold, text, FONT_SIZES.model_source)
+
+    pad_x, pad_y = 28, 12
+    box_w = text_size.x + 2 * pad_x
+    box_h = text_size.y + 2 * pad_y
+    box_x = rect.x + rect.width / 2 - box_w / 2
+    box_y = rect.y + UI_CONFIG.header_height + 16
+    box = rl.Rectangle(box_x, box_y, box_w, box_h)
+    rl.draw_rectangle_rounded(box, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_rectangle_rounded_lines_ex(box, 0.35, 10, 4, color)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad_x, box_y + pad_y), FONT_SIZES.model_source, 0, color)
