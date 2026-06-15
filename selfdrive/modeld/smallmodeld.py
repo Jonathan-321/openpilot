@@ -5,8 +5,7 @@ from openpilot.selfdrive.modeld.model_worker import run
 
 
 def main(demo=False):
-  # core 7, exactly where master pins the model. small is the universal default every device runs,
-  # so it keeps master's dedicated core. big moves to the pool as the optional add-on.
+  # core 7, where master pins the model. big shares this core too (per request).
   try:
     run(usbgpu=False, channel_path=SMALL_CHANNEL, core=7, demo=demo)
   except Exception:

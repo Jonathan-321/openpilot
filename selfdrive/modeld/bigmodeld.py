@@ -17,10 +17,10 @@ def main(demo=False):
     cloudlog.warning(f"bigmodeld idling, no big model (usbgpu_present={present} compiled={compiled})")
     while True:
       time.sleep(1)
-  # background pool: small keeps master's core 7, so big the add-on runs here. the eGPU does the
-  # compute, big only needs cpu to feed it. watch the HUD Hz to confirm it holds 20Hz on the pool.
+  # core 7 with the small model (both models here, per request). camerad keeps core 6. note: big's
+  # ~10s startup JIT shares this core with small, so a slow/lagging startup will show in the HUD.
   try:
-    run(usbgpu=True, channel_path=BIG_CHANNEL, core=[0, 1, 2, 3], priority=53, demo=demo)
+    run(usbgpu=True, channel_path=BIG_CHANNEL, core=7, priority=53, demo=demo)
   except Exception:
     cloudlog.exception("bigmodeld crashed")  # the launcher only sends crashes to sentry, log to rlog too
     raise
