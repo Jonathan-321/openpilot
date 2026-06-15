@@ -22,6 +22,9 @@ from openpilot.selfdrive.modeld.model_channel import ModelChannel
 
 def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
+  # params the UI status panel reads: each worker reports when it is loaded and if it parks
+  ready_key = "BigModelReady" if usbgpu else "SmallModelReady"
+  failed_key = "UsbGpuFailed" if usbgpu else "SmallModelFailed"
   cloudlog.warning(f"{name} init")
   config_realtime_process(core, priority)
   params = Params()
@@ -45,24 +48,19 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     time.sleep(0.1)
   cloudlog.warning(f"{name} vision connected")
 
-  # tell the UI the big model is loading so it can show "BIG MODEL LOADING" during the ~10s compile
-  if usbgpu:
-    params.put_bool("UsbGpuLoading", True)
   st = time.monotonic()
   cloudlog.warning(f"{name} loading model")
   try:
     model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
   except Exception:
-    # usbgpu init/load failed. clear the loading flag so the UI drops back to SMALL, and park instead
-    # of crashing (avoids a "not running" alert). selector keeps publishing small until next ignition.
+    # usbgpu load failed. mark failed so the UI shows SMALL not LOADING, and park instead of crashing
+    # (avoids a "not running" alert). the selector keeps publishing small until the next ignition.
     cloudlog.exception(f"{name} model load failed, parking until next ignition cycle")
-    if usbgpu:
-      params.put_bool("UsbGpuLoading", False)
+    params.put_bool(failed_key, True)
     while True:
       time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
-  if usbgpu:
-    params.put_bool("UsbGpuLoading", False)
+  params.put_bool(ready_key, True)
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
   if demo:
@@ -151,6 +149,7 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
       # usbgpu errored/disconnected. modeld is already on small with no gap. idle instead of exiting
       # (exiting trips "bigmodeld not running") and don't touch the usbgpu again until next ignition
       cloudlog.exception(f"{name} model run failed, parking until next ignition cycle")
+      params.put_bool(failed_key, True)  # UI status panel shows this model crashed
       while True:
         time.sleep(1)
     model_execution_time = time.perf_counter() - mt1

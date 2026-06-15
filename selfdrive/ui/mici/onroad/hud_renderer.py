@@ -35,8 +35,8 @@ class Colors:
   WHITE = rl.WHITE
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
   BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
-  BIG_MODEL = rl.Color(128, 216, 166, 255)   # eGPU big model active (green)
-  SMALL_MODEL = rl.Color(255, 178, 64, 255)  # on-device small model / fallback (amber)
+  MODEL_GREEN = rl.Color(128, 216, 166, 255)  # the model currently driving
+  MODEL_RED = rl.Color(235, 90, 90, 255)      # crashed or not reachable
 
 
 FONT_SIZES = FontSizes()
@@ -118,8 +118,8 @@ class HudRenderer(Widget):
     # which model is publishing, from the UsbGpuActive param the selector keeps current.
     # read throttled, not every frame. always shown so the source is never ambiguous
     self._params = Params()
-    self._big_model_active: bool = False
-    self._big_model_loading: bool = False
+    self._small_line: tuple = ("small model: loading", COLORS.WHITE)
+    self._big_line: tuple = ("big model: loading", COLORS.WHITE)
     self._model_poll_frame: int = 0
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -192,33 +192,44 @@ class HudRenderer(Widget):
     self._draw_steering_wheel(rect)
     self._draw_model_source(rect)
 
+  @staticmethod
+  def _model_status(name: str, ready: bool, failed: bool, active: bool, available: bool) -> tuple:
+    if not available:
+      return (f"{name}: not reachable", COLORS.MODEL_RED)
+    if failed:
+      return (f"{name}: crashed", COLORS.MODEL_RED)
+    if active and ready:
+      return (f"{name}: active", COLORS.MODEL_GREEN)
+    if ready:
+      return (f"{name}: ready", COLORS.WHITE)
+    return (f"{name}: loading", COLORS.WHITE)
+
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
-    """Always-on indicator of which model is publishing: big (eGPU) or small (on-device)."""
+    """Two-line status panel: small and big model state, green for the active one, red if crashed."""
     if self._model_poll_frame % 30 == 0:  # throttle the param reads, not every frame
       try:
-        self._big_model_active = self._params.get_bool("UsbGpuActive")
-        self._big_model_loading = self._params.get_bool("UsbGpuLoading")
+        p = self._params
+        big_active = p.get_bool("UsbGpuActive")  # the selector publishes big when this is set, else small
+        self._small_line = self._model_status("small model", ready=p.get_bool("SmallModelReady"),
+                                               failed=p.get_bool("SmallModelFailed"), active=not big_active, available=True)
+        self._big_line = self._model_status("big model", ready=p.get_bool("BigModelReady"),
+                                            failed=p.get_bool("UsbGpuFailed"), active=big_active,
+                                            available=p.get_bool("UsbGpuPresent") and p.get_bool("UsbGpuCompiled"))
       except Exception:
-        self._big_model_active = self._big_model_loading = False
+        pass
     self._model_poll_frame += 1
 
-    if self._big_model_active:
-      text, color = "BIG MODEL", COLORS.BIG_MODEL
-    elif self._big_model_loading:
-      text, color = "BIG MODEL LOADING", COLORS.SMALL_MODEL
-    else:
-      text, color = "SMALL MODEL", COLORS.SMALL_MODEL
-    text_size = measure_text_cached(self._font_bold, text, FONT_SIZES.model_source)
-
-    pad_x, pad_y = 14, 8
-    box_w = text_size.x + 2 * pad_x
-    box_h = text_size.y + 2 * pad_y
+    lines = [self._small_line, self._big_line]
+    fs = FONT_SIZES.model_source
+    line_h = measure_text_cached(self._font_bold, "Ag", fs).y
+    pad, gap = 12, 4
+    box_w = max(measure_text_cached(self._font_bold, t, fs).x for t, _ in lines) + 2 * pad
+    box_h = len(lines) * line_h + (len(lines) - 1) * gap + 2 * pad
     box_x = rect.x + rect.width / 2 - box_w / 2
-    box_y = rect.y + 16  # top center, clear of the top-left set speed and bottom-left wheel
-    box = rl.Rectangle(box_x, box_y, box_w, box_h)
-    rl.draw_rectangle_rounded(box, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
-    rl.draw_rectangle_rounded_lines_ex(box, 0.35, 10, 4, color)
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad_x, box_y + pad_y), FONT_SIZES.model_source, 0, color)
+    box_y = rect.y + 12
+    rl.draw_rectangle_rounded(rl.Rectangle(box_x, box_y, box_w, box_h), 0.2, 10, COLORS.BLACK_TRANSLUCENT)
+    for i, (text, color) in enumerate(lines):
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad, box_y + pad + i * (line_h + gap)), fs, 0, color)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
