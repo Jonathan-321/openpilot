@@ -183,7 +183,7 @@ def main(demo=False):
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
   run_count = 0
   big_used_count = 0
-  cloudlog.warning(f"modeld selector starting (use_big={use_big})")
+  cloudlog.warning(f"modeld selector starting (use_big={use_big} usbgpu_present={_present} compiled={_compiled})")
 
   while True:
     if small_channel is None:

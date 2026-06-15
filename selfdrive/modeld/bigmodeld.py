@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import time
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path
 from openpilot.common.file_chunker import get_manifest_path
@@ -8,9 +9,14 @@ from openpilot.selfdrive.modeld.model_worker import run
 
 
 def main(demo=False):
-  if not (usbgpu_present() and os.path.isfile(get_manifest_path(modeld_pkl_path(usbgpu=True)))):
-    cloudlog.warning("no usbgpu / big model, bigmodeld exiting")
-    return
+  present = usbgpu_present()
+  compiled = os.path.isfile(get_manifest_path(modeld_pkl_path(usbgpu=True)))
+  if not (present and compiled):
+    # no big model to run. idle, do NOT return: a returning process trips the manager's
+    # "bigmodeld not running" alert. present vs compiled tells us which one is missing.
+    cloudlog.warning(f"bigmodeld idling, no big model (usbgpu_present={present} compiled={compiled})")
+    while True:
+      time.sleep(1)
   # core 7, where master pins its model, off camerad's core 6. big needs a dedicated core to keep up
   # on the usbgpu (it never produced on the contended pool). own process, so it can never touch small
   try:
