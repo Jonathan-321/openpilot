@@ -205,7 +205,7 @@ class HudRenderer(Widget):
     box_w = text_size.x + 2 * pad_x
     box_h = text_size.y + 2 * pad_y
     box_x = rect.x + rect.width / 2 - box_w / 2
-    box_y = rect.y + UI_CONFIG.header_height + 16
+    box_y = rect.y + UI_CONFIG.header_height + 56  # clear of the speed/unit cluster above
     box = rl.Rectangle(box_x, box_y, box_w, box_h)
     rl.draw_rectangle_rounded(box, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
     rl.draw_rectangle_rounded_lines_ex(box, 0.35, 10, 4, color)

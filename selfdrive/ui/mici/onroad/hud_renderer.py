@@ -1,6 +1,7 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -26,12 +27,16 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 36
   set_speed: int = 112
+  model_source: int = 44
 
 
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
+  BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
+  BIG_MODEL = rl.Color(128, 216, 166, 255)   # eGPU big model active (green)
+  SMALL_MODEL = rl.Color(255, 178, 64, 255)  # on-device small model / fallback (amber)
 
 
 FONT_SIZES = FontSizes()
@@ -110,6 +115,12 @@ class HudRenderer(Widget):
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
+    # which model is publishing, from the UsbGpuActive param the selector keeps current.
+    # read throttled, not every frame. always shown so the source is never ambiguous
+    self._params = Params()
+    self._big_model_active: bool = False
+    self._model_poll_frame: int = 0
+
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -178,6 +189,27 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+    self._draw_model_source(rect)
+
+  def _draw_model_source(self, rect: rl.Rectangle) -> None:
+    """Always-on indicator of which model is publishing: big (eGPU) or small (on-device)."""
+    if self._model_poll_frame % 30 == 0:  # throttle the param read, not every frame
+      self._big_model_active = self._params.get_bool("UsbGpuActive")
+    self._model_poll_frame += 1
+
+    text = "BIG MODEL" if self._big_model_active else "SMALL MODEL"
+    color = COLORS.BIG_MODEL if self._big_model_active else COLORS.SMALL_MODEL
+    text_size = measure_text_cached(self._font_bold, text, FONT_SIZES.model_source)
+
+    pad_x, pad_y = 20, 10
+    box_w = text_size.x + 2 * pad_x
+    box_h = text_size.y + 2 * pad_y
+    box_x = rect.x + rect.width / 2 - box_w / 2
+    box_y = rect.y + 16  # top center, clear of the top-left set speed and bottom-left wheel
+    box = rl.Rectangle(box_x, box_y, box_w, box_h)
+    rl.draw_rectangle_rounded(box, 0.35, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_rectangle_rounded_lines_ex(box, 0.35, 10, 4, color)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad_x, box_y + pad_y), FONT_SIZES.model_source, 0, color)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
