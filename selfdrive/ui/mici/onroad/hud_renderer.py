@@ -27,7 +27,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 36
   set_speed: int = 112
-  model_source: int = 24
+  model_source: int = 20
 
 
 @dataclass(frozen=True)
@@ -193,28 +193,32 @@ class HudRenderer(Widget):
     self._draw_model_source(rect)
 
   @staticmethod
-  def _model_status(name: str, ready: bool, failed: bool, active: bool, available: bool) -> tuple:
+  def _model_status(name: str, ready: bool, failed: bool, active: bool, available: bool, metrics: str) -> tuple:
     if not available:
       return (f"{name}: not reachable", COLORS.MODEL_RED)
     if failed:
       return (f"{name}: crashed", COLORS.MODEL_RED)
-    if active and ready:
-      return (f"{name}: active", COLORS.MODEL_GREEN)
-    if ready:
-      return (f"{name}: ready", COLORS.WHITE)
+    if ready:  # running. green when it is the model actually driving, white when standing by
+      return (f"{name}: running ({metrics})", COLORS.MODEL_GREEN if active else COLORS.WHITE)
     return (f"{name}: loading", COLORS.WHITE)
 
+  def _metric(self, key: str) -> str:
+    raw = self._params.get(key)
+    return raw.decode() if raw else "-- Hz"
+
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
-    """Two-line status panel: small and big model state, green for the active one, red if crashed."""
+    """Two-line status panel: small and big model state with live rate, green for the active one."""
     if self._model_poll_frame % 30 == 0:  # throttle the param reads, not every frame
       try:
         p = self._params
         big_active = p.get_bool("UsbGpuActive")  # the selector publishes big when this is set, else small
         self._small_line = self._model_status("small model", ready=p.get_bool("SmallModelReady"),
-                                               failed=p.get_bool("SmallModelFailed"), active=not big_active, available=True)
+                                               failed=p.get_bool("SmallModelFailed"), active=not big_active,
+                                               available=True, metrics=self._metric("SmallModelHz"))
         self._big_line = self._model_status("big model", ready=p.get_bool("BigModelReady"),
                                             failed=p.get_bool("UsbGpuFailed"), active=big_active,
-                                            available=p.get_bool("UsbGpuPresent") and p.get_bool("UsbGpuCompiled"))
+                                            available=p.get_bool("UsbGpuPresent") and p.get_bool("UsbGpuCompiled"),
+                                            metrics=self._metric("BigModelHz"))
       except Exception:
         pass
     self._model_poll_frame += 1

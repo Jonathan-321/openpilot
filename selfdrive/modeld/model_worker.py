@@ -22,9 +22,10 @@ from openpilot.selfdrive.modeld.model_channel import ModelChannel
 
 def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
-  # params the UI status panel reads: each worker reports when it is loaded and if it parks
+  # params the UI status panel reads: each worker reports when it is loaded, its live rate, and parks
   ready_key = "BigModelReady" if usbgpu else "SmallModelReady"
   failed_key = "UsbGpuFailed" if usbgpu else "SmallModelFailed"
+  hz_key = "BigModelHz" if usbgpu else "SmallModelHz"
   cloudlog.warning(f"{name} init")
   config_realtime_process(core, priority)
   params = Params()
@@ -80,6 +81,7 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   last_vipc_frame_id = 0
   run_count = 0
   produced_count = 0
+  hz_t = time.monotonic()  # window start for the published-rate metric the UI shows
 
   while True:
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
@@ -174,10 +176,16 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
         'lane_change_direction': int(DH.lane_change_direction),
       }
       channel.write(meta_main.frame_id, payload)
+      produced_count += 1
+      # publish the live rate and exec time for the UI status panel, every ~1s
+      if produced_count % 20 == 0:
+        now = time.monotonic()
+        hz = 20.0 / (now - hz_t) if now > hz_t else 0.0
+        params.put(hz_key, f"{round(hz)} Hz, {model_execution_time * 1e3:.0f} ms")
+        hz_t = now
       # heartbeat in the rlog so we see the worker is producing and how fast. a worker that loads but
       # never produces shows a "loaded model" line and no "producing" line
-      if produced_count == 0 or produced_count % 100 == 0:
+      if produced_count == 1 or produced_count % 100 == 0:
         cloudlog.warning(f"{name} producing: frame={meta_main.frame_id} exec={model_execution_time * 1e3:.0f}ms "
                          f"dropped={vipc_dropped_frames} count={produced_count}")
-      produced_count += 1
     last_vipc_frame_id = meta_main.frame_id
