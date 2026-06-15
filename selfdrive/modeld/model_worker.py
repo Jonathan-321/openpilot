@@ -27,6 +27,7 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   params = Params()
   channel = ModelChannel(channel_path, create=True)
 
+  cloudlog.warning(f"{name} waiting for camerad vision")
   while True:
     available_streams = VisionIpcClient.available_streams("camerad", block=False)
     if available_streams:
@@ -42,13 +43,23 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     time.sleep(0.1)
   while use_extra_client and not vipc_client_extra.connect(False):
     time.sleep(0.1)
+  cloudlog.warning(f"{name} vision connected")
 
   # tell the UI the big model is loading so it can show "BIG MODEL LOADING" during the ~10s compile
   if usbgpu:
     params.put_bool("UsbGpuLoading", True)
   st = time.monotonic()
   cloudlog.warning(f"{name} loading model")
-  model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
+  try:
+    model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
+  except Exception:
+    # usbgpu init/load failed. clear the loading flag so the UI drops back to SMALL, and park instead
+    # of crashing (avoids a "not running" alert). selector keeps publishing small until next ignition.
+    cloudlog.exception(f"{name} model load failed, parking until next ignition cycle")
+    if usbgpu:
+      params.put_bool("UsbGpuLoading", False)
+    while True:
+      time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
   if usbgpu:
     params.put_bool("UsbGpuLoading", False)

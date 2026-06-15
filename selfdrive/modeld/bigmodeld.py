@@ -13,7 +13,11 @@ def main(demo=False):
     return
   # core 7, where master pins its model, off camerad's core 6. big needs a dedicated core to keep up
   # on the usbgpu (it never produced on the contended pool). own process, so it can never touch small
-  run(usbgpu=True, channel_path=BIG_CHANNEL, core=7, priority=53, demo=demo)
+  try:
+    run(usbgpu=True, channel_path=BIG_CHANNEL, core=7, priority=53, demo=demo)
+  except Exception:
+    cloudlog.exception("bigmodeld crashed")  # the launcher only sends crashes to sentry, log to rlog too
+    raise
 
 
 if __name__ == "__main__":
