@@ -23,7 +23,9 @@ from openpilot.selfdrive.modeld.model_channel import ModelChannel
 def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
   cloudlog.warning(f"{name} init")
-  config_realtime_process(core, priority)
+  # big shares core 7 with the small model. load big at low priority so its ~10s JIT compile never
+  # starves the small model already producing there; it is raised to full priority once loaded.
+  config_realtime_process(core, 1 if usbgpu else priority)
   params = Params()
   channel = ModelChannel(channel_path, create=True)
 
@@ -56,6 +58,8 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     while True:
       time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
+  if usbgpu:
+    config_realtime_process(core, priority)  # big is loaded, now run at full priority to keep up
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
   if demo:
