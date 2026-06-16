@@ -23,8 +23,8 @@ from openpilot.selfdrive.modeld.model_channel import ModelChannel
 def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   name = "bigmodeld" if usbgpu else "smallmodeld"
   cloudlog.warning(f"{name} init")
-  # big shares core 7 with small. load big at low priority so its ~10s JIT compile never starves the
-  # small model already producing there. it is raised to its run priority once loaded.
+  # big loads and warms up at low priority so its multi-second first-run jit compile never starves the
+  # small model sharing core 7. it is raised to full priority after that first run finishes (see below).
   config_realtime_process(core, 1 if usbgpu else priority)
   params = Params()
   channel = ModelChannel(channel_path, create=True)
@@ -58,8 +58,6 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     while True:
       time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
-  if usbgpu:
-    config_realtime_process(core, priority)  # big is loaded, run at full priority now
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
   if demo:
@@ -79,6 +77,8 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
   last_vipc_frame_id = 0
   run_count = 0
   produced_count = 0
+  big_warmed = False
+  last_frame_log = 0.0
 
   while True:
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
@@ -87,6 +87,11 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
       if buf_main is None:
         break
     if buf_main is None:
+      # no frame from camerad. if this persists the camera pipeline is wedged, which stalls both models
+      now = time.monotonic()
+      if now - last_frame_log > 2.0:
+        cloudlog.warning(f"{name} no camera frame from camerad, waiting")
+        last_frame_log = now
       continue
 
     if use_extra_client:
@@ -152,6 +157,11 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
         time.sleep(1)
     model_execution_time = time.perf_counter() - mt1
     if model_output is not None:
+      if usbgpu and not big_warmed:
+        # the first full run compiled the tinygrad kernels at low priority so small stayed protected.
+        # big is warm now, so take full priority and lead on core 7.
+        config_realtime_process(core, priority)
+        big_warmed = True
       desire_state = model_output['desire_state'][0].reshape(-1)
       lane_change_prob = desire_state[log.Desire.laneChangeLeft] + desire_state[log.Desire.laneChangeRight]
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob)
