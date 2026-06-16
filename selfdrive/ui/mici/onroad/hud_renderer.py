@@ -6,11 +6,6 @@ import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
-
-# read the model channels directly for ground-truth state and rate (no params, nothing to rebuild)
-_SMALL_CHANNEL = "/dev/shm/openpilot_smallmodel"  # must match model_channel.SMALL_CHANNEL
-_BIG_CHANNEL = "/dev/shm/openpilot_bigmodel"       # must match model_channel.BIG_CHANNEL
-_CH_HDR = struct.Struct("<QqQ")                    # seq, frame_id, length; matches model_channel.HEADER
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -28,6 +23,12 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+
+# model channels, read directly for ground-truth state and rate (no params, nothing to rebuild)
+# the paths and header must match model_channel.py
+_SMALL_CHANNEL = "/dev/shm/openpilot_smallmodel"
+_BIG_CHANNEL = "/dev/shm/openpilot_bigmodel"
+_CH_HDR = struct.Struct("<QqQ")  # seq, frame_id, length
 
 
 @dataclass(frozen=True)
@@ -217,17 +218,19 @@ class HudRenderer(Widget):
     except Exception:
       return ("loading", 0)
     st = self._chan_state.get(path)
-    if st is None or st[0] < 0:
+    if st is None:
       self._chan_state[path] = [fid, now, 0]
       return ("running" if fid >= 0 else "loading", 0)
-    if fid > st[0]:  # advanced
-      dt = now - st[1]
-      st[2] = round((fid - st[0]) / dt) if dt > 0 else st[2]
+    if fid != st[0]:
+      # frame_id changed, so the worker is producing. it resets to ~0 each ignition, so we compare for
+      # change not increase, else a fresh drive reads stalled until it climbs past the old value.
+      if fid > st[0] and now > st[1]:
+        st[2] = round((fid - st[0]) / (now - st[1]))
       st[0], st[1] = fid, now
-      return ("running", st[2])
-    if now - st[1] > 1.5:  # stopped advancing
+      return ("running" if fid >= 0 else "loading", st[2])
+    if now - st[1] > 1.5:  # frame_id unchanged too long, model stalled
       return ("stalled", 0)
-    return ("running", st[2])
+    return ("running" if fid >= 0 else "loading", st[2])
 
   @staticmethod
   def _model_line(name: str, state: str, hz: int, active: bool, available: bool) -> tuple:
