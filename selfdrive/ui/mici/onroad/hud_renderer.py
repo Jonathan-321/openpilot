@@ -1,7 +1,3 @@
-import mmap
-import os
-import struct
-import time
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -23,12 +19,6 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
-
-# model channels, read directly for ground-truth state and rate (no params, nothing to rebuild)
-# the paths and header must match model_channel.py
-_SMALL_CHANNEL = "/dev/shm/openpilot_smallmodel"
-_BIG_CHANNEL = "/dev/shm/openpilot_bigmodel"
-_CH_HDR = struct.Struct("<QqQ")  # seq, frame_id, length
 
 
 @dataclass(frozen=True)
@@ -125,13 +115,9 @@ class HudRenderer(Widget):
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
-    # which model is publishing, from the UsbGpuActive param the selector keeps current.
-    # read throttled, not every frame. always shown so the source is never ambiguous
+    # which model is driving, from the UsbGpuActive param the selector keeps current
     self._params = Params()
-    self._chan_mm: dict = {}     # channel path -> mmap handle (lazy)
-    self._chan_state: dict = {}  # channel path -> [last_frame_id, last_advance_time, hz]
-    self._small_line: tuple = ("small: loading", COLORS.WHITE)
-    self._big_line: tuple = ("big: loading", COLORS.WHITE)
+    self._big_active: bool = False
     self._model_poll_frame: int = 0
 
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -204,74 +190,28 @@ class HudRenderer(Widget):
     self._draw_steering_wheel(rect)
     self._draw_model_source(rect)
 
-  def _channel_status(self, path: str, now: float) -> tuple:
-    """Read a model channel's frame_id to get ground-truth state and rate. Returns (state, hz)."""
-    mm = self._chan_mm.get(path)
-    if mm is None:
-      try:
-        mm = mmap.mmap(os.open(path, os.O_RDONLY), _CH_HDR.size, prot=mmap.PROT_READ)
-        self._chan_mm[path] = mm
-      except OSError:
-        return ("loading", 0)  # worker hasn't created the channel yet
-    try:
-      fid = _CH_HDR.unpack(mm[:_CH_HDR.size])[1]
-    except Exception:
-      return ("loading", 0)
-    st = self._chan_state.get(path)
-    if st is None:
-      self._chan_state[path] = [fid, now, 0]
-      return ("running" if fid >= 0 else "loading", 0)
-    if fid != st[0]:
-      # frame_id changed, so the worker is producing. it resets to ~0 each ignition, so we compare for
-      # change not increase, else a fresh drive reads stalled until it climbs past the old value.
-      if fid > st[0] and now > st[1]:
-        st[2] = round((fid - st[0]) / (now - st[1]))
-      st[0], st[1] = fid, now
-      return ("running" if fid >= 0 else "loading", st[2])
-    if now - st[1] > 1.5:  # frame_id unchanged too long, model stalled
-      return ("stalled", 0)
-    return ("running" if fid >= 0 else "loading", st[2])
-
-  @staticmethod
-  def _model_line(name: str, state: str, hz: int, active: bool, available: bool) -> tuple:
-    if not available:
-      return (f"{name}: no eGPU", COLORS.MODEL_RED)
-    if state == "stalled":
-      return (f"{name}: stalled", COLORS.MODEL_RED)
-    if state == "loading":
-      return (f"{name}: loading", COLORS.WHITE)
-    txt = f"{name}: {hz} Hz" if hz > 0 else f"{name}: running"
-    return (txt, COLORS.MODEL_GREEN if active else COLORS.WHITE)  # green when actually driving
-
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
-    """Two-line status panel read from the channels: state + live Hz, green for the model driving."""
-    if self._model_poll_frame % 30 == 0:  # ~0.5s
-      now = time.monotonic()
-      s_state, s_hz = self._channel_status(_SMALL_CHANNEL, now)
-      b_state, b_hz = self._channel_status(_BIG_CHANNEL, now)
-      try:
-        big_active = self._params.get_bool("UsbGpuActive")
-      except Exception:
-        big_active = False
-      try:
-        big_avail = self._params.get_bool("UsbGpuPresent") and self._params.get_bool("UsbGpuCompiled")
-      except Exception:
-        big_avail = True
-      self._small_line = self._model_line("small", s_state, s_hz, active=not big_active, available=True)
-      self._big_line = self._model_line("big", b_state, b_hz, active=big_active, available=big_avail)
+    """Show which model is driving (big or small) and its health, from modelV2 and UsbGpuActive."""
+    sm = ui_state.sm
+    if self._model_poll_frame % 30 == 0:  # UsbGpuActive changes rarely, read it throttled
+      self._big_active = self._params.get_bool("UsbGpuActive")
     self._model_poll_frame += 1
 
-    lines = [self._small_line, self._big_line]
+    src = "big" if self._big_active else "small"
+    if not sm.alive["modelV2"] or sm.recv_frame["modelV2"] < ui_state.started_frame:
+      text, color = f"{src}: loading", COLORS.WHITE
+    elif any(e.name == EventName.modeldLagging for e in sm["onroadEvents"]):
+      text, color = f"{src}: lagging", COLORS.MODEL_RED
+    else:
+      text, color = f"{src}: {sm['modelV2'].modelExecutionTime * 1000:.0f} ms", COLORS.MODEL_GREEN
+
     fs = FONT_SIZES.model_source
-    line_h = measure_text_cached(self._font_bold, "Ag", fs).y
-    pad, gap = 12, 4
-    box_w = max(measure_text_cached(self._font_bold, t, fs).x for t, _ in lines) + 2 * pad
-    box_h = len(lines) * line_h + (len(lines) - 1) * gap + 2 * pad
-    box_x = rect.x + rect.width / 2 - box_w / 2
+    size = measure_text_cached(self._font_bold, text, fs)
+    pad = 12
+    box_x = rect.x + rect.width / 2 - (size.x + 2 * pad) / 2
     box_y = rect.y + 12
-    rl.draw_rectangle_rounded(rl.Rectangle(box_x, box_y, box_w, box_h), 0.2, 10, COLORS.BLACK_TRANSLUCENT)
-    for i, (text, color) in enumerate(lines):
-      rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad, box_y + pad + i * (line_h + gap)), fs, 0, color)
+    rl.draw_rectangle_rounded(rl.Rectangle(box_x, box_y, size.x + 2 * pad, size.y + 2 * pad), 0.2, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad, box_y + pad), fs, 0, color)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
