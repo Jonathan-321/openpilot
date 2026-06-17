@@ -2454,6 +2454,13 @@ struct SoundPressure @0xdc24138990726023 {
   }
 }
 
+struct SoundDebug {
+  volume @0 :Float32;
+  ambientDb @1 :Float32;
+  rawDb @2 :Float32;
+  alert @3 :SelfdriveState.AudibleAlert;
+}
+
 struct AudioData {
   data @0 :Data;
   sampleRate @1 :UInt32;
@@ -2538,6 +2545,7 @@ struct Event {
     # microphone data
     soundPressure @103 :SoundPressure;
     rawAudioData @147 :AudioData;
+    soundDebug @152 :SoundDebug;
 
     # systems stuff
     androidLog @20 :AndroidLogEntry;

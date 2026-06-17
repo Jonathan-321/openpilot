@@ -82,12 +82,14 @@ class DeveloperLayoutMici(NavScroller):
     self._alpha_long_toggle = BigToggle("alpha longitudinal",
                                         initial_state=ui_state.params.get_bool("AlphaLongitudinalEnabled"),
                                         toggle_callback=self._on_alpha_long_enabled)
+    self._sound_debug_toggle = BigParamControl("show sound debug", "ShowSoundDebug")
     self._single_tone_toggle = BigParamControl("single tone sounds", "SingleToneSounds")
     self._debug_mode_toggle = BigParamControl("ui debug mode", "ShowDebugInfo",
                                               toggle_callback=lambda checked: (gui_app.set_show_touches(checked),
                                                                                gui_app.set_show_fps(checked)))
 
     self._scroller.add_widgets([
+      self._sound_debug_toggle,
       self._single_tone_toggle,
       self._adb_toggle,
       self._ssh_toggle,

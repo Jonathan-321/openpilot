@@ -179,6 +179,7 @@ class Soundd:
     import sounddevice as sd
 
     sm = messaging.SubMaster(['selfdriveState', 'soundPressure'])
+    pm = messaging.PubMaster(['soundDebug'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
@@ -207,6 +208,13 @@ class Soundd:
           elapsed = time.monotonic() - self.ramp_start_time
           ramp_vol = float(np.interp(elapsed, [0, ALERT_RAMP_TIME], [self.ramp_start_volume, MAX_VOLUME]))
           self.current_volume = max(self.current_volume, ramp_vol)
+
+        msg = messaging.new_message('soundDebug', valid=True)
+        msg.soundDebug.volume = float(self.current_volume)
+        msg.soundDebug.ambientDb = float(self.spl_filter_weighted.x)
+        msg.soundDebug.rawDb = float(sm["soundPressure"].soundPressureWeightedDb)
+        msg.soundDebug.alert = self.current_alert
+        pm.send('soundDebug', msg)
 
         rk.keep_time()
 
