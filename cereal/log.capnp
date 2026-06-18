@@ -691,19 +691,19 @@ struct UsbState {
   disconnectCount @3 :UInt32;
   overCurrentCount @4 :UInt32;
 
-  # LTSSM link state (kernel-sampled)
+  # LTSSM link state
   ltssmState @5 :LtssmState;             # current link state
   lastNonU0State @6 :LtssmState;         # last state that wasn't U0
   lastTransitionMonoTime @7 :UInt64;     # monotonic ns of the last LTSSM transition
   ltssmHistory @8 :List(UInt8);          # ring of recent LtssmState (~240ms)
 
-  # SS link-event counters (kernel-sampled at 1kHz)
-  recoveryCount @9 :UInt32;              # U0->Recovery entries (best-effort: brief events may undercount)
+  # SS link-event counters
+  recoveryCount @9 :UInt32;              # U0->Recovery entries
   rxDetectCount @10 :UInt32;             # Rx.Detect entries
   ssInactiveCount @11 :UInt32;           # SS.Inactive entries
   poweredOffCount @12 :UInt32;           # controller low-power (LPM) entries
 
-  # SI: hardware link error counter (exact)
+  # SI: hardware link error counter
   linkErrorCount @13 :UInt32;            # xHCI PORTLI Link Error Count [15:0]
 
   # sleep / power management
