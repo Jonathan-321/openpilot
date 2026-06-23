@@ -56,7 +56,8 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     if not usbgpu:
       raise  # small is the pacer, let it crash so the manager restarts it
     # big load failed. park instead of exiting (exiting trips a "not running" alert). the selector
-    # keeps publishing small until the next ignition.
+    # keeps publishing small until the next ignition. flag failed so the UI shows small, not "big: loading"
+    params.put_bool("UsbGpuFailed", True)
     while True:
       time.sleep(1)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
@@ -156,7 +157,9 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
       if not usbgpu:
         raise  # small is the pacer, let it crash so the manager restarts it
       # big errored/disconnected. modeld is already on small with no gap. park instead of exiting
-      # (exiting trips "bigmodeld not running") and don't touch the usbgpu again until next ignition
+      # (exiting trips "bigmodeld not running") and don't touch the usbgpu again until next ignition.
+      # flag failed so the UI shows small, not "big: loading"
+      params.put_bool("UsbGpuFailed", True)
       while True:
         time.sleep(1)
     model_execution_time = time.perf_counter() - mt1

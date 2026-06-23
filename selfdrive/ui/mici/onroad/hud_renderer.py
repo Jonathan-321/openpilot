@@ -26,7 +26,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 36
   set_speed: int = 112
-  model_source: int = 60
+  model_source: int = 44
 
 
 @dataclass(frozen=True)
@@ -185,23 +185,37 @@ class HudRenderer(Widget):
     self._draw_model_source(rect)
 
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
-    """Show which model is driving (big or small) and its health, from modelV2 and UsbGpuActive."""
+    """Two lines: the eGPU state (off, loading, on, failed) and the model actually driving plus its
+    health. so the eGPU status is always visible even when no eGPU is connected."""
     sm = ui_state.sm
-    src = "big" if ui_state.usbgpu_active else "small"
-    if not sm.alive["modelV2"] or sm.recv_frame["modelV2"] < ui_state.started_frame:
-      text, color = f"{src}: loading", COLORS.WHITE
-    elif any(e.name == EventName.modeldLagging for e in sm["onroadEvents"]):
-      text, color = f"{src}: lagging", COLORS.MODEL_RED
+    if not ui_state.usbgpu:
+      egpu_text, egpu_color = "eGPU: off", COLORS.WHITE_TRANSLUCENT
+    elif ui_state.usbgpu_failed or not ui_state.usbgpu_compiled:
+      egpu_text, egpu_color = "eGPU: failed", COLORS.MODEL_RED
+    elif not ui_state.usbgpu_active:
+      egpu_text, egpu_color = "eGPU: loading", COLORS.WHITE
     else:
-      text, color = f"{src}: {sm['modelV2'].modelExecutionTime * 1000:.0f} ms", COLORS.MODEL_GREEN
+      egpu_text, egpu_color = "eGPU: on", COLORS.MODEL_GREEN
+
+    driver = "big" if (ui_state.usbgpu and ui_state.usbgpu_active) else "small"
+    if not sm.alive["modelV2"] or sm.recv_frame["modelV2"] < ui_state.started_frame:
+      model_text, model_color = f"{driver}: loading", COLORS.WHITE
+    elif any(e.name == EventName.modeldLagging for e in sm["onroadEvents"]):
+      model_text, model_color = f"{driver}: lagging", COLORS.MODEL_RED
+    else:
+      model_text, model_color = f"{driver}: {sm['modelV2'].modelExecutionTime * 1000:.0f} ms", COLORS.MODEL_GREEN
 
     fs = FONT_SIZES.model_source
-    size = measure_text_cached(self._font_bold, text, fs)
-    pad = 12
-    box_x = rect.x + rect.width / 2 - (size.x + 2 * pad) / 2
+    pad, gap = 12, 4
+    s1 = measure_text_cached(self._font_bold, egpu_text, fs)
+    s2 = measure_text_cached(self._font_bold, model_text, fs)
+    box_w = max(s1.x, s2.x) + 2 * pad
+    box_h = s1.y + s2.y + gap + 2 * pad
+    box_x = rect.x + rect.width / 2 - box_w / 2
     box_y = rect.y + 12
-    rl.draw_rectangle_rounded(rl.Rectangle(box_x, box_y, size.x + 2 * pad, size.y + 2 * pad), 0.2, 10, COLORS.BLACK_TRANSLUCENT)
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(box_x + pad, box_y + pad), fs, 0, color)
+    rl.draw_rectangle_rounded(rl.Rectangle(box_x, box_y, box_w, box_h), 0.2, 10, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_text_ex(self._font_bold, egpu_text, rl.Vector2(box_x + pad, box_y + pad), fs, 0, egpu_color)
+    rl.draw_text_ex(self._font_bold, model_text, rl.Vector2(box_x + pad, box_y + pad + s1.y + gap), fs, 0, model_color)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel

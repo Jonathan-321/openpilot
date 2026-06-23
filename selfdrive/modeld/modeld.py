@@ -168,6 +168,7 @@ def main(demo=False):
   params.put_bool("UsbGpuPresent", _present)
   params.put_bool("UsbGpuCompiled", _compiled)
   params.put_bool("UsbGpuActive", False)
+  params.put_bool("UsbGpuFailed", False)
 
   config_realtime_process([0, 1, 2, 3], 54)  # selector is light, core 7 is reserved for the big model
 
@@ -250,6 +251,7 @@ def main(demo=False):
         big_active = False
         big_done = True
         params.put_bool("UsbGpuActive", False)
+        params.put_bool("UsbGpuFailed", True)
         cloudlog.warning(f"modeld big model stalled, staying on small until next ignition (frame {target})")
 
     if payload is not None:
