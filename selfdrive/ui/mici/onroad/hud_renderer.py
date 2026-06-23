@@ -1,7 +1,6 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
-from openpilot.common.params import Params
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -115,11 +114,6 @@ class HudRenderer(Widget):
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
-    # which model is driving, from the UsbGpuActive param the selector keeps current
-    self._params = Params()
-    self._big_active: bool = False
-    self._model_poll_frame: int = 0
-
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -193,11 +187,7 @@ class HudRenderer(Widget):
   def _draw_model_source(self, rect: rl.Rectangle) -> None:
     """Show which model is driving (big or small) and its health, from modelV2 and UsbGpuActive."""
     sm = ui_state.sm
-    if self._model_poll_frame % 30 == 0:  # UsbGpuActive changes rarely, read it throttled
-      self._big_active = self._params.get_bool("UsbGpuActive")
-    self._model_poll_frame += 1
-
-    src = "big" if self._big_active else "small"
+    src = "big" if ui_state.usbgpu_active else "small"
     if not sm.alive["modelV2"] or sm.recv_frame["modelV2"] < ui_state.started_frame:
       text, color = f"{src}: loading", COLORS.WHITE
     elif any(e.name == EventName.modeldLagging for e in sm["onroadEvents"]):

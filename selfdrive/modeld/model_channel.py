@@ -3,6 +3,7 @@ import mmap
 import os
 import pickle
 import struct
+from openpilot.common.swaglog import cloudlog
 
 BIG_CHANNEL = "/dev/shm/openpilot_bigmodel"
 SMALL_CHANNEL = "/dev/shm/openpilot_smallmodel"
@@ -24,7 +25,11 @@ class ModelChannel:
 
   def write(self, frame_id: int, model_output: dict) -> None:
     data = pickle.dumps(model_output, protocol=pickle.HIGHEST_PROTOCOL)
-    assert HEADER.size + len(data) <= SHM_SIZE, "model output too large for shm"
+    if HEADER.size + len(data) > SHM_SIZE:
+      # too large for the buffer. drop this frame instead of crashing the worker, the reader keeps
+      # the previous frame and the next write recovers
+      cloudlog.error(f"model output {len(data)} bytes exceeds shm {SHM_SIZE}, dropping frame {frame_id}")
+      return
     seq = HEADER.unpack(self.mm[:HEADER.size])[0]
     # odd seq while writing, even when done, so the reader can detect a torn read
     HEADER.pack_into(self.mm, 0, seq + 1, frame_id, len(data))

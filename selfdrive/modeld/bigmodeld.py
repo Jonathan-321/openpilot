@@ -22,8 +22,12 @@ def main(demo=False):
   try:
     run(usbgpu=True, channel_path=BIG_CHANNEL, core=7, priority=53, demo=demo)
   except Exception:
-    cloudlog.exception("bigmodeld crashed")  # the launcher only sends crashes to sentry, log to rlog too
-    raise
+    # any crash before the worker's own model-load/run guards (eg vision/setup phase) must not exit:
+    # a returning bigmodeld trips the manager "not running" alert which soft-disables even though
+    # small is healthy. park until the next ignition, the selector stays on small.
+    cloudlog.exception("bigmodeld crashed, parking until next ignition cycle")
+    while True:
+      time.sleep(1)
 
 
 if __name__ == "__main__":

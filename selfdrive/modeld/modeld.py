@@ -133,7 +133,7 @@ class ModelState:
     return outputs_dict
 
 
-BIG_MODEL_DEADLINE = 0.025  # wait for big only briefly past when small is ready; keeps the fallback frame on-time
+BIG_MODEL_DEADLINE = 0.025  # wait for big only briefly past when small is ready, keeps the fallback frame on-time
 
 
 def _publish(pm, publish_state, prev_action, payload):
@@ -147,6 +147,7 @@ def _publish(pm, publish_state, prev_action, payload):
                  payload['model_execution_time'], payload['live_calib_seen'])
   modelv2_send.modelV2.meta.laneChangeState = payload['lane_change_state']
   modelv2_send.modelV2.meta.laneChangeDirection = payload['lane_change_direction']
+  modelv2_send.modelV2.usbGpu = payload['used_big']
   fill_driving_model_data(drivingdata_send, modelv2_send)
   fill_pose_msg(posenet_send, output, payload['frame_id'], payload['vipc_dropped_frames'],
                 payload['timestamp_eof'], payload['live_calib_seen'])
@@ -168,7 +169,7 @@ def main(demo=False):
   params.put_bool("UsbGpuCompiled", _compiled)
   params.put_bool("UsbGpuActive", False)
 
-  config_realtime_process([0, 1, 2, 3], 54)  # selector is light; core 7 is reserved for the big model
+  config_realtime_process([0, 1, 2, 3], 54)  # selector is light, core 7 is reserved for the big model
 
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry"])
   publish_state = PublishState()
@@ -268,8 +269,11 @@ def main(demo=False):
         cloudlog.warning(f"modeld selector: big_used={big_used_count}/{run_count} last_big_peek={big_peek} target={target}")
       payload['vipc_dropped_frames'] = selector_dropped
       payload['frame_drop_ratio'] = frames_dropped / (1 + frames_dropped)
+      payload['used_big'] = used_big
       prev_action = _publish(pm, publish_state, prev_action, payload)
-    last_published = target
+      # only advance once we actually published, so a torn read retries this frame next poll
+      # instead of skipping it
+      last_published = target
 
 
 if __name__ == "__main__":
