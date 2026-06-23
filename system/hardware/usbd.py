@@ -13,6 +13,7 @@ POLL_HZ = 100          # LTSSM sample rate
 PUB_HZ = 10            # cereal publish rate
 PUB_DIV = POLL_HZ // PUB_HZ
 HIST_LEN = 24          # ~240ms of LTSSM per publish
+HEALTH_LOG_S = 5       # throttle for the link-health event
 
 DEVICE = "/sys/bus/usb/devices/4-1"  # aux USB (eGPU)
 PORT = "/sys/bus/usb/devices/usb4/4-0:1.0/usb4-port1"
@@ -95,6 +96,8 @@ def main():
   last_transition_ns = 0
   was_connected = False
   tick = 0
+  health_t = time.monotonic()
+  health_link_err = health_rec = health_ss = health_rx = 0
 
   while True:
     # registers are only safe to read while the controller is powered/active
@@ -161,6 +164,23 @@ def main():
       s.vbusMv = read_vbus_mv()
 
       pm.send('usbState', msg)
+
+      # link-health: throttled event with link-error rate
+      now = time.monotonic()
+      if now - health_t >= HEALTH_LOG_S:
+        d_err = (link_error_count - health_link_err) & 0xffff
+        d_rec = counts["recoveryCount"] - health_rec
+        d_ss = counts["ssInactiveCount"] - health_ss
+        d_rx = counts["rxDetectCount"] - health_rx
+        if d_err or d_rec or d_ss or d_rx or not connected:
+          cloudlog.event("usb_link_health", linkErrPerSec=round(d_err / (now - health_t), 1),
+                         recoveries=d_rec, ssInactive=d_ss, rxDetect=d_rx, disconnects=disconnect_count,
+                         ltssm=prev_ltssm, speedMbps=speed_mbps, connected=connected)
+        health_t = now
+        health_link_err = link_error_count
+        health_rec = counts["recoveryCount"]
+        health_ss = counts["ssInactiveCount"]
+        health_rx = counts["rxDetectCount"]
 
     tick += 1
     rk.keep_time()
