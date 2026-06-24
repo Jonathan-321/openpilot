@@ -47,19 +47,31 @@ def run(usbgpu: bool, channel_path: str, core, priority: int = 53, demo=False):
     time.sleep(0.1)
   cloudlog.warning(f"{name} vision connected")
 
-  st = time.monotonic()
-  cloudlog.warning(f"{name} loading model")
-  try:
-    model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
-  except Exception:
-    cloudlog.exception(f"{name} model load failed")
-    if not usbgpu:
-      raise  # small is the pacer, let it crash so the manager restarts it
-    # big load failed. park instead of exiting (exiting trips a "not running" alert). the selector
-    # keeps publishing small until the next ignition. flag failed so the UI shows small, not "big: loading"
-    params.put_bool("UsbGpuFailed", True)
-    while True:
-      time.sleep(1)
+  # big retries the initial load: the eGPU may re-enumerate flakily right after boot and
+  # stabilize a few seconds later. small is already the pacer, so a few retries at startup cost
+  # nothing and let big come up this ignition. small (the pacer) raises on load fail so the
+  # manager restarts it. this retry is ONLY for the initial load, not for a mid-drive failure
+  # (a 10s reload while driving is unacceptable, so a real mid-drive failure parks permanently).
+  BIG_LOAD_RETRIES = 5
+  BIG_LOAD_RETRY_DELAY = 5.0
+  model = None
+  for attempt in range(1, BIG_LOAD_RETRIES + 1):
+    st = time.monotonic()
+    cloudlog.warning(f"{name} loading model (attempt {attempt}/{BIG_LOAD_RETRIES})")
+    try:
+      model = ModelState(vipc_client_main.width, vipc_client_main.height, usbgpu)
+      break
+    except Exception:
+      cloudlog.exception(f"{name} model load failed (attempt {attempt}/{BIG_LOAD_RETRIES})")
+      if not usbgpu:
+        raise  # small is the pacer, let it crash so the manager restarts it
+      if attempt == BIG_LOAD_RETRIES:
+        # big load failed for good. park (exiting trips a "not running" alert). the selector keeps
+        # publishing small. flag failed so the UI shows small, not "big: loading"
+        params.put_bool("UsbGpuFailed", True)
+        while True:
+          time.sleep(1)
+      time.sleep(BIG_LOAD_RETRY_DELAY)
   cloudlog.warning(f"{name} loaded model in {time.monotonic() - st:.1f}s")
 
   sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
